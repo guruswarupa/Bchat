@@ -2,7 +2,6 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { io, Socket } from 'socket.io-client';
 
 interface Message {
   message_id: string;
@@ -22,38 +21,54 @@ interface User {
 }
 
 export default function ChatDashboard() {
-  const [socket, setSocket] = useState<Socket | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [currentRoom, setCurrentRoom] = useState('general');
   const [username, setUsername] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
+  const [eventSource, setEventSource] = useState<EventSource | null>(null);
 
   useEffect(() => {
     if (isLoggedIn) {
-      const newSocket = io('http://localhost:5000');
-      setSocket(newSocket);
+      // Create SSE connection
+      const sse = new EventSource(`http://localhost:5000/api/events?room=${currentRoom}&username=${username}`);
+      setEventSource(sse);
 
-      newSocket.on('message', (message: Message) => {
-        setMessages(prev => [...prev, message]);
-      });
+      sse.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        
+        if (data.type === 'message') {
+          setMessages(prev => [...prev, data.message]);
+        } else if (data.type === 'userJoined') {
+          setOnlineUsers(prev => [...prev.filter(u => u.user_id !== data.user.user_id), data.user]);
+        } else if (data.type === 'userLeft') {
+          setOnlineUsers(prev => prev.filter(u => u.user_id !== data.userId));
+        }
+      };
 
-      newSocket.on('userJoined', (user: User) => {
-        setOnlineUsers(prev => [...prev.filter(u => u.user_id !== user.user_id), user]);
-      });
+      sse.onerror = (error) => {
+        console.error('SSE error:', error);
+      };
 
-      newSocket.on('userLeft', (userId: string) => {
-        setOnlineUsers(prev => prev.filter(u => u.user_id !== userId));
-      });
-
-      newSocket.emit('joinRoom', { room: currentRoom, username });
+      // Fetch initial messages
+      fetchMessages();
 
       return () => {
-        newSocket.close();
+        sse.close();
       };
     }
   }, [isLoggedIn, currentRoom, username]);
+
+  const fetchMessages = async () => {
+    try {
+      const response = await fetch(`http://localhost:5000/api/messages?room=${currentRoom}`);
+      const data = await response.json();
+      setMessages(data);
+    } catch (error) {
+      console.error('Error fetching messages:', error);
+    }
+  };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,15 +77,25 @@ export default function ChatDashboard() {
     }
   };
 
-  const sendMessage = (e: React.FormEvent) => {
+  const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newMessage.trim() && socket) {
-      socket.emit('sendMessage', {
-        room: currentRoom,
-        message: newMessage,
-        username
-      });
-      setNewMessage('');
+    if (newMessage.trim()) {
+      try {
+        await fetch('http://localhost:5000/api/messages', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            room: currentRoom,
+            message: newMessage,
+            username: username
+          })
+        });
+        setNewMessage('');
+      } catch (error) {
+        console.error('Error sending message:', error);
+      }
     }
   };
 
