@@ -639,34 +639,49 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
 
 // Get uploaded files
 app.get('/api/files', authenticateToken, async (req, res) => {
-  let connection;
   try {
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(
-      `SELECT m.message_id, m.file_url, m.created_at, u.username, 
-              SUBSTR(m.file_url, INSTR(m.file_url, '/', -1) + 1) as filename
-       FROM messages m 
-       JOIN users u ON m.sender_id = u.user_id 
-       WHERE m.message_type = 'file' AND m.file_url IS NOT NULL
-       ORDER BY m.created_at DESC`
-    );
+    const bucketName = 'chat-files';
+    
+    // Check if bucket exists
+    const bucketExists = await minioClient.bucketExists(bucketName);
+    if (!bucketExists) {
+      return res.json([]);
+    }
 
-    const files = result.rows.map(row => ({
-      file_id: row[0],
-      download_url: row[1],
-      upload_date: row[2],
-      uploaded_by: row[3],
-      filename: row[4],
-      file_size: 0, // You might want to store this separately
-      file_type: row[4] ? row[4].split('.').pop() : 'unknown'
-    }));
+    // Get list of objects from MinIO
+    const objectsList = [];
+    const objectsStream = minioClient.listObjects(bucketName, '', true);
+    
+    for await (const obj of objectsStream) {
+      try {
+        // Get object stats to get file size
+        const stats = await minioClient.statObject(bucketName, obj.name);
+        
+        // Extract original filename from the prefixed name (remove timestamp prefix)
+        const originalFilename = obj.name.includes('_') ? obj.name.substring(obj.name.indexOf('_') + 1) : obj.name;
+        
+        objectsList.push({
+          file_id: obj.name, // Use object name as file ID
+          filename: originalFilename,
+          file_size: stats.size,
+          file_type: originalFilename.split('.').pop() || 'unknown',
+          uploaded_by: 'User', // MinIO doesn't store this info, could be enhanced
+          upload_date: stats.lastModified,
+          download_url: `http://0.0.0.0:9000/${bucketName}/${obj.name}`
+        });
+      } catch (objError) {
+        console.error(`Error processing object ${obj.name}:`, objError);
+        // Continue with other objects even if one fails
+      }
+    }
 
-    res.json(files);
+    // Sort by upload date (newest first)
+    objectsList.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+
+    res.json(objectsList);
   } catch (error) {
-    console.error('Error fetching files:', error);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (connection) await connection.close();
+    console.error('Error fetching files from MinIO:', error);
+    res.status(500).json({ error: 'MinIO error: ' + error.message });
   }
 });
 

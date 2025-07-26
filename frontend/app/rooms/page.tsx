@@ -28,7 +28,12 @@ export default function RoomsPage() {
 
   const fetchRooms = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/rooms');
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5000/api/rooms', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       setRooms(data);
     } catch (error) {
@@ -39,9 +44,13 @@ export default function RoomsPage() {
   const createRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
+      const token = localStorage.getItem('token');
       const response = await fetch('http://localhost:5000/api/rooms', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
         body: JSON.stringify(newRoom)
       });
       

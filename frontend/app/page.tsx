@@ -42,7 +42,7 @@ export default function ChatDashboard() {
       const apiBase = window.location.hostname === 'localhost' 
         ? 'http://localhost:5000' 
         : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
-      
+
       const response = await fetch(`${apiBase}/api/rooms/${currentRoom}/messages`, {
         headers: {
           'Authorization': `Bearer ${token}`
@@ -63,7 +63,7 @@ export default function ChatDashboard() {
       const apiBase = window.location.hostname === 'localhost' 
         ? 'http://localhost:5000' 
         : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
-      
+
       const url = isRegistering
         ? `${apiBase}/api/auth/register`
         : `${apiBase}/api/auth/login`;
@@ -119,7 +119,7 @@ export default function ChatDashboard() {
       const apiBase = window.location.hostname === 'localhost' 
         ? 'http://localhost:5000' 
         : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
-      
+
       const response = await fetch(`${apiBase}/api/upload`, {
         method: 'POST',
         headers: {
@@ -144,10 +144,80 @@ export default function ChatDashboard() {
       const socketUrl = window.location.hostname === 'localhost' 
         ? 'http://localhost:5000' 
         : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
-      
+
       const newSocket = io(socketUrl, {
         transports: ['websocket', 'polling']
       });
+      setSocket(newSocket);
+
+      // Join as user
+      newSocket.emit('user_join', {
+        user_id: localStorage.getItem('user_id') || username,
+        username: username
+      });
+
+      // Join current room
+      newSocket.emit('join_room', currentRoom);
+
+      // Listen for new messages
+      newSocket.on('new_message', (message: Message) => {
+        console.log('Received message:', message);
+        setMessages(prev => [...prev, message]);
+      });
+
+      // Listen for user updates
+      newSocket.on('users_update', (users: User[]) => {
+        console.log('Users update:', users);
+        setOnlineUsers(users);
+      });
+
+      // Listen for user joined room
+      newSocket.on('user_joined_room', (data: any) => {
+        console.log('User joined room:', data);
+      });
+
+      // Listen for typing indicators
+      newSocket.on('user_typing', (data: any) => {
+        console.log('User typing:', data);
+      });
+
+      newSocket.on('user_stop_typing', (data: any) => {
+        console.log('User stopped typing:', data);
+      });
+
+      // Fetch initial messages
+      fetchMessages();
+
+      return () => {
+        newSocket.close();
+      };
+    }
+  }, [isLoggedIn, currentRoom, username]);
+
+  useEffect(() => {
+    if (isLoggedIn && username) {
+      // Create Socket.IO connection
+      const socketUrl = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+
+      const newSocket = io(socketUrl, {
+        transports: ['websocket', 'polling']
+      });
+
+      newSocket.on('connect', () => {
+        console.log('Connected to server with socket ID:', newSocket.id);
+        newSocket.emit('join_room', currentRoom);
+      });
+
+      newSocket.on('connect_error', (error: Error) => {
+        console.error('Socket connection error:', error);
+      });
+
+      newSocket.on('disconnect', (reason: string) => {
+        console.log('Socket disconnected:', reason);
+      });
+
       setSocket(newSocket);
 
       // Join as user

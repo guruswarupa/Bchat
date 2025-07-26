@@ -1,7 +1,6 @@
-
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 
 interface SharedFile {
@@ -31,7 +30,11 @@ export default function FilesPage() {
     setUploading(true);
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/upload', {
+      const apiBase = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+
+      const response = await fetch(`${apiBase}/api/upload`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -54,19 +57,34 @@ export default function FilesPage() {
   };
 
   const fetchFiles = async () => {
-    try {
-      const token = localStorage.getItem('token');
-      const response = await fetch('http://localhost:5000/api/files', {
-        headers: {
-          'Authorization': `Bearer ${token}`
-        }
-      });
-      const data = await response.json();
-      setFiles(data);
-    } catch (error) {
-      console.error('Error fetching files:', error);
+  try {
+    const token = localStorage.getItem('token');
+    const apiBase = window.location.hostname === 'localhost' 
+      ? 'http://localhost:5000' 
+      : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+
+    const response = await fetch(`${apiBase}/api/files`, {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      console.error(`Fetch error: ${response.status} ${response.statusText}`, text);
+      return;
     }
-  };
+
+    const data = await response.json();
+    setFiles(data);
+  } catch (error) {
+    console.error('Error fetching files:', error);
+  }
+};
+
+  useEffect(() => {
+    fetchFiles();
+  }, []);
 
   const formatFileSize = (bytes: number) => {
     if (bytes === 0) return '0 Bytes';
