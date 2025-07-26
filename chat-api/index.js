@@ -106,118 +106,6 @@ const upload = multer({ storage: multer.memoryStorage() });
 // JWT Secret
 const JWT_SECRET = 'your-jwt-secret-key';
 
-// Initialize Oracle DB tables
-async function initializeDatabase() {
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-    dbAvailable = true;
-
-    // Create users table
-    const createUsers = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE users (
-          user_id VARCHAR2(50) PRIMARY KEY,
-          username VARCHAR2(100) UNIQUE NOT NULL,
-          email VARCHAR2(255) UNIQUE NOT NULL,
-          password_hash VARCHAR2(255) NOT NULL,
-          avatar_url VARCHAR2(500),
-          created_at DATE DEFAULT SYSDATE,
-          last_seen DATE DEFAULT SYSDATE,
-          is_online NUMBER(1) DEFAULT 0
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create chat rooms table
-    const createRooms = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE chat_rooms (
-          room_id VARCHAR2(50) PRIMARY KEY,
-          room_name VARCHAR2(255) NOT NULL,
-          description VARCHAR2(1000),
-          created_by VARCHAR2(50),
-          created_at DATE DEFAULT SYSDATE,
-          is_private NUMBER(1) DEFAULT 0,
-          room_type VARCHAR2(20) DEFAULT ''public''
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create messages table
-    const createMessages = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE messages (
-          message_id VARCHAR2(50) PRIMARY KEY,
-          room_id VARCHAR2(50),
-          user_id VARCHAR2(50),
-          content CLOB,
-          message_type VARCHAR2(20) DEFAULT ''text'',
-          file_url VARCHAR2(500),
-          reply_to VARCHAR2(50),
-          created_at DATE DEFAULT SYSDATE,
-          blockchain_hash VARCHAR2(255),
-          is_edited NUMBER(1) DEFAULT 0,
-          edited_at DATE
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create room members table
-    const createRoomMembers = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE room_members (
-          room_id VARCHAR2(50),
-          user_id VARCHAR2(50),
-          joined_at DATE DEFAULT SYSDATE,
-          role VARCHAR2(20) DEFAULT ''member'',
-          PRIMARY KEY (room_id, user_id)
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    await connection.execute(createUsers);
-    await connection.execute(createRooms);
-    await connection.execute(createMessages);
-    await connection.execute(createRoomMembers);
-
-    // Insert default general room
-    const insertGeneralRoom = `
-      MERGE INTO chat_rooms r
-      USING (SELECT 'general' as room_id, 'General Chat' as room_name, 'Main chat room for everyone' as description FROM dual) src
-      ON (r.room_id = src.room_id)
-      WHEN NOT MATCHED THEN
-        INSERT (room_id, room_name, description, room_type)
-        VALUES (src.room_id, src.room_name, src.description, 'public')
-    `;
-
-    await connection.execute(insertGeneralRoom);
-    await connection.commit();
-
-    console.log('Database initialized successfully');
-  } catch (error) {
-    console.error('Database initialization error:', error);
-    console.log('Falling back to in-memory storage for development');
-    dbAvailable = false;
-  } finally {
-    if (connection) {
-      await connection.close();
-    }
-  }
-}
-
 // Initialize MinIO bucket for chat files
 async function initializeMinIO() {
   try {
@@ -546,12 +434,26 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Get chat rooms
+// Get chat rooms with member counts
 app.get('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
     connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute('SELECT * FROM chat_rooms ORDER BY created_at');
+    const result = await connection.execute(`
+      SELECT 
+        r.room_id,
+        r.room_name,
+        r.description,
+        r.created_by,
+        r.created_at,
+        r.is_private,
+        r.room_type,
+        NVL(COUNT(rm.user_id), 0) as member_count
+      FROM chat_rooms r
+      LEFT JOIN room_members rm ON r.room_id = rm.room_id
+      GROUP BY r.room_id, r.room_name, r.description, r.created_by, r.created_at, r.is_private, r.room_type
+      ORDER BY r.created_at DESC
+    `);
 
     const rooms = result.rows.map(row => ({
       room_id: row[0],
@@ -560,7 +462,8 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
       created_by: row[3],
       created_at: row[4],
       is_private: row[5],
-      room_type: row[6]
+      room_type: row[6],
+      member_count: row[7]
     }));
 
     res.json(rooms);
@@ -692,29 +595,192 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
 });
 
 // Create chat room
+
+
+// Join a room
+app.post('/api/rooms/:roomId/join', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    const roomId = req.params.roomId;
+    const userId = req.user.user_id;
+
+    connection = await oracledb.getConnection(dbConfig);
+    
+    // Check if room exists
+    const roomResult = await connection.execute(
+      'SELECT room_id, room_type FROM chat_rooms WHERE room_id = :room_id',
+      [roomId]
+    );
+    
+    if (roomResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // Check if user is already a member
+    const memberResult = await connection.execute(
+      'SELECT * FROM room_members WHERE room_id = :room_id AND user_id = :user_id',
+      [roomId, userId]
+    );
+
+    if (memberResult.rows.length === 0) {
+      // Add user as member
+      await connection.execute(
+        'INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, :role)',
+        { room_id: roomId, user_id: userId, role: 'member' }
+      );
+      await connection.commit();
+    }
+
+    res.json({ message: 'Successfully joined room' });
+  } catch (error) {
+    console.error('Error joining room:', error);
+    res.status(500).json({ error: 'Failed to join room' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
+// Leave a room
+app.post('/api/rooms/:roomId/leave', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    const roomId = req.params.roomId;
+    const userId = req.user.user_id;
+
+    connection = await oracledb.getConnection(dbConfig);
+    
+    await connection.execute(
+      'DELETE FROM room_members WHERE room_id = :room_id AND user_id = :user_id',
+      [roomId, userId]
+    );
+    await connection.commit();
+
+    res.json({ message: 'Successfully left room' });
+  } catch (error) {
+    console.error('Error leaving room:', error);
+    res.status(500).json({ error: 'Failed to leave room' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
+// Delete a room (admin only)
+app.delete('/api/rooms/:roomId', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    const roomId = req.params.roomId;
+    const userId = req.user.user_id;
+
+    connection = await oracledb.getConnection(dbConfig);
+    
+    // Check if user is the room creator or admin
+    const roomResult = await connection.execute(
+      'SELECT created_by FROM chat_rooms WHERE room_id = :room_id',
+      [roomId]
+    );
+    
+    if (roomResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    if (roomResult.rows[0][0] !== userId) {
+      return res.status(403).json({ error: 'Only room creator can delete the room' });
+    }
+
+    // Delete room members first
+    await connection.execute(
+      'DELETE FROM room_members WHERE room_id = :room_id',
+      [roomId]
+    );
+
+    // Delete messages in the room
+    await connection.execute(
+      'DELETE FROM messages WHERE room_id = :room_id',
+      [roomId]
+    );
+
+    // Delete the room
+    await connection.execute(
+      'DELETE FROM chat_rooms WHERE room_id = :room_id',
+      [roomId]
+    );
+
+    await connection.commit();
+    res.json({ message: 'Room deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting room:', error);
+    res.status(500).json({ error: 'Failed to delete room' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
 app.post('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
-    const { room_name, description, is_private } = req.body;
+    const { room_name, description, room_type } = req.body;
+    
+    // Validation
+    if (!room_name || room_name.trim().length === 0) {
+      return res.status(400).json({ error: 'Room name is required' });
+    }
+    
+    if (room_name.trim().length > 100) {
+      return res.status(400).json({ error: 'Room name must be 100 characters or less' });
+    }
+
     const roomId = uuidv4();
+    const sanitizedRoomName = room_name.trim();
+    const sanitizedDescription = description ? description.trim() : '';
+    const validRoomType = ['public', 'private'].includes(room_type) ? room_type : 'public';
 
     connection = await oracledb.getConnection(dbConfig);
+    
+    // Check if room name already exists
+    const existingRoom = await connection.execute(
+      'SELECT room_id FROM chat_rooms WHERE LOWER(room_name) = LOWER(:room_name)',
+      [sanitizedRoomName]
+    );
+    
+    if (existingRoom.rows.length > 0) {
+      return res.status(409).json({ error: 'A room with this name already exists' });
+    }
+
     await connection.execute(
-      'INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private) VALUES (:room_id, :room_name, :description, :created_by, :is_private)',
-      { room_id: roomId, room_name, description, created_by: req.user.user_id, is_private: is_private ? 1 : 0 }
+      `INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_type) 
+       VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_type)`,
+      { 
+        room_id: roomId, 
+        room_name: sanitizedRoomName, 
+        description: sanitizedDescription, 
+        created_by: req.user.user_id, 
+        is_private: validRoomType === 'private' ? 1 : 0,
+        room_type: validRoomType
+      }
     );
 
-    // Add creator as room member
+    // Add creator as room admin
     await connection.execute(
       'INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, :role)',
       { room_id: roomId, user_id: req.user.user_id, role: 'admin' }
     );
 
     await connection.commit();
-    res.status(201).json({ room_id: roomId, room_name, description, created_by: req.user.user_id });
+    
+    res.status(201).json({ 
+      room_id: roomId, 
+      room_name: sanitizedRoomName, 
+      description: sanitizedDescription, 
+      created_by: req.user.user_id,
+      room_type: validRoomType
+    });
   } catch (error) {
     console.error('Error creating room:', error);
-    res.status(500).json({ error: 'Failed to create room' });
+    if (error.message && error.message.includes('ORA-00001')) {
+      res.status(409).json({ error: 'Room name already exists' });
+    } else {
+      res.status(500).json({ error: 'Failed to create room' });
+    }
   } finally {
     if (connection) await connection.close();
   }
@@ -803,7 +869,6 @@ app.get('/api/verify/:messageId', authenticateToken, async (req, res) => {
 
 // Initialize everything
 async function initialize() {
-  await initializeDatabase();
   await initializeMinIO();
   console.log('All services initialized');
 }
