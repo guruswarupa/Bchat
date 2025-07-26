@@ -105,6 +105,104 @@ const upload = multer({ storage: multer.memoryStorage() });
 // JWT Secret
 const JWT_SECRET = 'your-jwt-secret-key';
 
+// Create database tables using existing connection
+async function initializeDatabaseTables(connection) {
+  // Create users table
+  const createUsers = `
+    BEGIN
+      EXECUTE IMMEDIATE 'CREATE TABLE users (
+        user_id VARCHAR2(50) PRIMARY KEY,
+        username VARCHAR2(100) UNIQUE NOT NULL,
+        email VARCHAR2(255) UNIQUE NOT NULL,
+        password_hash VARCHAR2(255) NOT NULL,
+        avatar_url VARCHAR2(500),
+        created_at DATE DEFAULT SYSDATE,
+        last_seen DATE DEFAULT SYSDATE,
+        is_online NUMBER(1) DEFAULT 0
+      )';
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE != -955 THEN RAISE; END IF;
+    END;
+  `;
+
+  // Create chat rooms table
+  const createRooms = `
+    BEGIN
+      EXECUTE IMMEDIATE 'CREATE TABLE chat_rooms (
+        room_id VARCHAR2(50) PRIMARY KEY,
+        room_name VARCHAR2(255) NOT NULL,
+        description VARCHAR2(1000),
+        created_by VARCHAR2(50),
+        created_at DATE DEFAULT SYSDATE,
+        is_private NUMBER(1) DEFAULT 0,
+        room_type VARCHAR2(20) DEFAULT ''public'',
+        room_pin VARCHAR2(50)
+      )';
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE != -955 THEN RAISE; END IF;
+    END;
+  `;
+
+  // Create messages table
+  const createMessages = `
+    BEGIN
+      EXECUTE IMMEDIATE 'CREATE TABLE messages (
+        message_id VARCHAR2(50) PRIMARY KEY,
+        room_id VARCHAR2(50),
+        user_id VARCHAR2(50),
+        content CLOB,
+        message_type VARCHAR2(20) DEFAULT ''text'',
+        file_url VARCHAR2(500),
+        reply_to VARCHAR2(50),
+        created_at DATE DEFAULT SYSDATE,
+        blockchain_hash VARCHAR2(255),
+        is_edited NUMBER(1) DEFAULT 0,
+        edited_at DATE
+      )';
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE != -955 THEN RAISE; END IF;
+    END;
+  `;
+
+  // Create room members table
+  const createRoomMembers = `
+    BEGIN
+      EXECUTE IMMEDIATE 'CREATE TABLE room_members (
+        room_id VARCHAR2(50),
+        user_id VARCHAR2(50),
+        joined_at DATE DEFAULT SYSDATE,
+        role VARCHAR2(20) DEFAULT ''member'',
+        PRIMARY KEY (room_id, user_id)
+      )';
+    EXCEPTION
+      WHEN OTHERS THEN
+        IF SQLCODE != -955 THEN RAISE; END IF;
+    END;
+  `;
+
+  await connection.execute(createUsers);
+  await connection.execute(createRooms);
+  await connection.execute(createMessages);
+  await connection.execute(createRoomMembers);
+
+  // Insert default general room
+  const insertGeneralRoom = `
+    MERGE INTO chat_rooms r
+    USING (SELECT 'general' as room_id, 'General Chat' as room_name, 'Main chat room for everyone' as description FROM dual) src
+    ON (r.room_id = src.room_id)
+    WHEN NOT MATCHED THEN
+      INSERT (room_id, room_name, description, room_type)
+      VALUES (src.room_id, src.room_name, src.description, 'public')
+  `;
+
+  await connection.execute(insertGeneralRoom);
+  await connection.commit();
+  console.log('Database tables created successfully');
+}
+
 // Initialize Oracle DB tables
 async function initializeDatabase() {
   let connection;
@@ -112,105 +210,28 @@ async function initializeDatabase() {
     connection = await oracledb.getConnection(dbConfig);
     dbAvailable = true;
 
-    // Create users table
-    const createUsers = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE users (
-          user_id VARCHAR2(50) PRIMARY KEY,
-          username VARCHAR2(100) UNIQUE NOT NULL,
-          email VARCHAR2(255) UNIQUE NOT NULL,
-          password_hash VARCHAR2(255) NOT NULL,
-          avatar_url VARCHAR2(500),
-          created_at DATE DEFAULT SYSDATE,
-          last_seen DATE DEFAULT SYSDATE,
-          is_online NUMBER(1) DEFAULT 0
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create chat rooms table
-    const createRooms = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE chat_rooms (
-          room_id VARCHAR2(50) PRIMARY KEY,
-          room_name VARCHAR2(255) NOT NULL,
-          description VARCHAR2(1000),
-          created_by VARCHAR2(50),
-          created_at DATE DEFAULT SYSDATE,
-          is_private NUMBER(1) DEFAULT 0,
-          room_type VARCHAR2(20) DEFAULT 'public',
-          room_pin VARCHAR2(50)
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create messages table
-    const createMessages = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE messages (
-          message_id VARCHAR2(50) PRIMARY KEY,
-          room_id VARCHAR2(50),
-          user_id VARCHAR2(50),
-          content CLOB,
-          message_type VARCHAR2(20) DEFAULT ''text'',
-          file_url VARCHAR2(500),
-          reply_to VARCHAR2(50),
-          created_at DATE DEFAULT SYSDATE,
-          blockchain_hash VARCHAR2(255),
-          is_edited NUMBER(1) DEFAULT 0,
-          edited_at DATE
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    // Create room members table
-    const createRoomMembers = `
-      BEGIN
-        EXECUTE IMMEDIATE 'CREATE TABLE room_members (
-          room_id VARCHAR2(50),
-          user_id VARCHAR2(50),
-          joined_at DATE DEFAULT SYSDATE,
-          role VARCHAR2(20) DEFAULT ''member'',
-          PRIMARY KEY (room_id, user_id)
-        )';
-      EXCEPTION
-        WHEN OTHERS THEN
-          IF SQLCODE != -955 THEN RAISE; END IF;
-      END;
-    `;
-
-    await connection.execute(createUsers);
-    await connection.execute(createRooms);
-    await connection.execute(createMessages);
-    await connection.execute(createRoomMembers);
-
-    // Insert default general room
-    const insertGeneralRoom = `
-      MERGE INTO chat_rooms r
-      USING (SELECT 'general' as room_id, 'General Chat' as room_name, 'Main chat room for everyone' as description FROM dual) src
-      ON (r.room_id = src.room_id)
-      WHEN NOT MATCHED THEN
-        INSERT (room_id, room_name, description, room_type)
-        VALUES (src.room_id, src.room_name, src.description, 'public')
-    `;
-
-    await connection.execute(insertGeneralRoom);
-    await connection.commit();
-
+    await initializeDatabaseTables(connection);
     console.log('Database initialized successfully');
   } catch (error) {
     console.error('Database initialization error:', error);
     console.log('Falling back to in-memory storage for development');
     dbAvailable = false;
+    
+    // Initialize in-memory storage
+    if (!global.inMemoryRooms) {
+      global.inMemoryRooms = new Map();
+      // Add default general room
+      global.inMemoryRooms.set('general', {
+        room_id: 'general',
+        room_name: 'General Chat',
+        description: 'Main chat room for everyone',
+        created_by: 'system',
+        is_private: false,
+        room_type: 'public',
+        room_pin: null,
+        created_at: new Date().toISOString()
+      });
+    }
   } finally {
     if (connection) {
       await connection.close();
@@ -286,6 +307,7 @@ const roomUsers = new Map(); // Track users per room: roomId -> Map(userId -> us
 // In-memory storage fallback
 const inMemoryUsers = new Map();
 const inMemoryMessages = new Map();
+global.inMemoryRooms = new Map();
 let dbAvailable = false;
 
 // Socket.IO connection handling
@@ -789,20 +811,47 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
 app.get('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(
-      'SELECT room_id, room_name, description, created_by, created_at, is_private, room_type FROM chat_rooms ORDER BY created_at DESC'
-    );
+    let rooms = [];
+    
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          'SELECT room_id, room_name, description, created_by, created_at, is_private, room_type FROM chat_rooms ORDER BY created_at DESC'
+        );
 
-    const rooms = result.rows.map(row => ({
-      room_id: row[0],
-      room_name: row[1],
-      description: row[2],
-      created_by: row[3],
-      created_at: row[4],
-      is_private: row[5] === 1,
-      room_type: row[6]
-    }));
+        rooms = result.rows.map(row => ({
+          room_id: row[0],
+          room_name: row[1],
+          description: row[2],
+          created_by: row[3],
+          created_at: row[4],
+          is_private: row[5] === 1,
+          room_type: row[6]
+        }));
+      } catch (dbError) {
+        console.error('Database fetch failed, falling back to memory:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      if (global.inMemoryRooms) {
+        rooms = Array.from(global.inMemoryRooms.values()).map(room => ({
+          room_id: room.room_id,
+          room_name: room.room_name,
+          description: room.description,
+          created_by: room.created_by,
+          created_at: room.created_at,
+          is_private: room.is_private,
+          room_type: room.room_type
+        }));
+        
+        // Sort by created_at DESC
+        rooms.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      }
+    }
 
     res.json(rooms);
   } catch (error) {
@@ -822,55 +871,91 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
 
     console.log('Creating room:', { room_name, is_private, room_pin: room_pin ? '[HIDDEN]' : 'none' });
 
-    // Check if we have database connection
-    try {
-      connection = await oracledb.getConnection(dbConfig);
-    } catch (dbError) {
-      console.error('Database connection failed:', dbError);
-      return res.status(500).json({ error: 'Database connection failed: ' + dbError.message });
+    // Ensure database is initialized before trying to create room
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        
+        // Test if tables exist by trying to query them first
+        try {
+          await connection.execute('SELECT COUNT(*) FROM chat_rooms WHERE ROWNUM = 1');
+        } catch (tableError) {
+          if (tableError.message.includes('ORA-00942')) {
+            console.log('Tables not found, reinitializing database...');
+            await initializeDatabaseTables(connection);
+          } else {
+            throw tableError;
+          }
+        }
+        
+        // Insert the room
+        await connection.execute(
+          `INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_type, room_pin) 
+           VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_type, :room_pin)`,
+          { 
+            room_id: roomId, 
+            room_name, 
+            description: description || '', 
+            created_by: req.user.user_id, 
+            is_private: is_private ? 1 : 0, 
+            room_type: is_private ? 'private' : 'public',
+            room_pin: is_private && room_pin ? room_pin : null
+          }
+        );
+
+        // Add creator as room member
+        await connection.execute(
+          'INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, :role)',
+          { room_id: roomId, user_id: req.user.user_id, role: 'admin' }
+        );
+
+        await connection.commit();
+        console.log('Room created successfully in database:', roomId);
+      } catch (dbError) {
+        console.error('Database room creation failed, falling back to memory:', dbError);
+        dbAvailable = false;
+        // Rollback if there was a transaction
+        if (connection) {
+          try {
+            await connection.rollback();
+          } catch (rollbackError) {
+            console.error('Rollback error:', rollbackError);
+          }
+        }
+      }
     }
     
-    // Insert the room
-    await connection.execute(
-      `INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_type, room_pin) 
-       VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_type, :room_pin)`,
-      { 
-        room_id: roomId, 
-        room_name, 
-        description: description || '', 
-        created_by: req.user.user_id, 
-        is_private: is_private ? 1 : 0, 
+    if (!dbAvailable) {
+      // Use in-memory storage
+      const roomData = {
+        room_id: roomId,
+        room_name,
+        description: description || '',
+        created_by: req.user.user_id,
+        is_private: Boolean(is_private),
         room_type: is_private ? 'private' : 'public',
-        room_pin: is_private && room_pin ? room_pin : null
+        room_pin: is_private && room_pin ? room_pin : null,
+        created_at: new Date().toISOString()
+      };
+      
+      // Store in a global in-memory rooms map
+      if (!global.inMemoryRooms) {
+        global.inMemoryRooms = new Map();
       }
-    );
-
-    // Add creator as room member
-    await connection.execute(
-      'INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, :role)',
-      { room_id: roomId, user_id: req.user.user_id, role: 'admin' }
-    );
-
-    await connection.commit();
-    console.log('Room created successfully:', roomId);
+      global.inMemoryRooms.set(roomId, roomData);
+      console.log('Room created successfully in memory:', roomId);
+    }
     
     res.status(201).json({ 
       room_id: roomId, 
       room_name, 
       description: description || '', 
       created_by: req.user.user_id,
-      is_private: is_private,
+      is_private: Boolean(is_private),
       room_type: is_private ? 'private' : 'public'
     });
   } catch (error) {
     console.error('Error creating room:', error);
-    if (connection) {
-      try {
-        await connection.rollback();
-      } catch (rollbackError) {
-        console.error('Rollback error:', rollbackError);
-      }
-    }
     res.status(500).json({ error: 'Failed to create room: ' + error.message });
   } finally {
     if (connection) await connection.close();
@@ -883,24 +968,43 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
   try {
     const { pin } = req.body;
     const roomId = req.params.roomId;
+    let roomData = null;
 
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(
-      'SELECT room_pin, is_private FROM chat_rooms WHERE room_id = :room_id',
-      [roomId]
-    );
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          'SELECT room_pin, is_private FROM chat_rooms WHERE room_id = :room_id',
+          [roomId]
+        );
 
-    if (result.rows.length === 0) {
+        if (result.rows.length > 0) {
+          const [storedPin, isPrivate] = result.rows[0];
+          roomData = { room_pin: storedPin, is_private: isPrivate === 1 };
+        }
+      } catch (dbError) {
+        console.error('Database PIN verification failed, falling back to memory:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      if (global.inMemoryRooms && global.inMemoryRooms.has(roomId)) {
+        const room = global.inMemoryRooms.get(roomId);
+        roomData = { room_pin: room.room_pin, is_private: room.is_private };
+      }
+    }
+
+    if (!roomData) {
       return res.status(404).json({ error: 'Room not found' });
     }
 
-    const [storedPin, isPrivate] = result.rows[0];
-
-    if (!isPrivate) {
+    if (!roomData.is_private) {
       return res.json({ success: true, message: 'Room is public' });
     }
 
-    if (storedPin === pin) {
+    if (roomData.room_pin === pin) {
       return res.json({ success: true, message: 'PIN verified' });
     } else {
       return res.status(401).json({ error: 'Invalid PIN' });
