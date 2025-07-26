@@ -16,7 +16,7 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: ["http://localhost:3000", "http://0.0.0.0:3000", "https://*.replit.dev", "https://*.repl.co"],
+    origin: "*",
     methods: ["GET", "POST"],
     credentials: true
   }
@@ -25,7 +25,7 @@ const io = socketIo(server, {
 const port = 5000;
 
 app.use(cors({
-  origin: ["http://localhost:3000", "http://0.0.0.0:3000", "https://*.replit.dev", "https://*.repl.co"],
+  origin: "*",
   credentials: true,
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"]
@@ -36,12 +36,12 @@ app.use(express.json());
 const dbConfig = {
   user: 'SYSTEM',
   password: 'oracle',
-  connectString: 'oracle-db:1521/FREE'
+  connectString: 'localhost:1521/FREE'
 };
 
 // MinIO Configuration
 const minioClient = new Minio.Client({
-  endPoint: 'minio',
+  endPoint: 'localhost',
   port: 9000,
   useSSL: false,
   accessKey: 'minioadmin',
@@ -51,43 +51,54 @@ const minioClient = new Minio.Client({
 // Web3 Configuration (Ganache)
 const web3 = new Web3('http://ganache:8545');
 
-// Smart Contract ABI for Chat
-const chatContractABI = [
-  {
-    "inputs": [
-      {"name": "messageId", "type": "string"},
-      {"name": "contentHash", "type": "string"},
-      {"name": "timestamp", "type": "uint256"}
-    ],
-    "name": "recordMessage",
-    "outputs": [],
-    "stateMutability": "nonpayable",
-    "type": "function"
-  },
-  {
-    "inputs": [{"name": "messageId", "type": "string"}],
-    "name": "getMessageRecord",
-    "outputs": [
-      {"name": "contentHash", "type": "string"},
-      {"name": "sender", "type": "address"},
-      {"name": "timestamp", "type": "uint256"}
-    ],
-    "stateMutability": "view",
-    "type": "function"
-  },
-  {
-    "inputs": [
-      {"name": "messageId", "type": "string"},
-      {"name": "contentHash", "type": "string"}
-    ],
-    "name": "verifyMessage",
-    "outputs": [{"name": "", "type": "bool"}],
-    "stateMutability": "view",
-    "type": "function"
-  }
-];
+// Load contract info from deployed contract
+let contractInfo;
+let contractAddress = null;
+let chatContractABI = [];
 
-const contractAddress = null; // Will be set after contract deployment
+try {
+  contractInfo = require('../blockchain/contract-info.json');
+  contractAddress = contractInfo.address;
+  chatContractABI = contractInfo.abi;
+  console.log('Smart contract loaded:', contractAddress);
+} catch (error) {
+  console.log('No deployed contract found, blockchain features will be disabled');
+  // Fallback ABI for development
+  chatContractABI = [
+    {
+      "inputs": [
+        {"name": "messageId", "type": "string"},
+        {"name": "contentHash", "type": "string"},
+        {"name": "timestamp", "type": "uint256"}
+      ],
+      "name": "recordMessage",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [{"name": "messageId", "type": "string"}],
+      "name": "getMessageRecord",
+      "outputs": [
+        {"name": "contentHash", "type": "string"},
+        {"name": "sender", "type": "address"},
+        {"name": "timestamp", "type": "uint256"}
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {"name": "messageId", "type": "string"},
+        {"name": "contentHash", "type": "string"}
+      ],
+      "name": "verifyMessage",
+      "outputs": [{"name": "", "type": "bool"}],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ];
+}
 
 // Multer configuration for file uploads
 const upload = multer({ storage: multer.memoryStorage() });
@@ -100,6 +111,7 @@ async function initializeDatabase() {
   let connection;
   try {
     connection = await oracledb.getConnection(dbConfig);
+    dbAvailable = true;
 
     // Create users table
     const createUsers = `
@@ -144,7 +156,7 @@ async function initializeDatabase() {
         EXECUTE IMMEDIATE 'CREATE TABLE messages (
           message_id VARCHAR2(50) PRIMARY KEY,
           room_id VARCHAR2(50),
-          sender_id VARCHAR2(50),
+          user_id VARCHAR2(50),
           content CLOB,
           message_type VARCHAR2(20) DEFAULT ''text'',
           file_url VARCHAR2(500),
@@ -197,6 +209,8 @@ async function initializeDatabase() {
     console.log('Database initialized successfully');
   } catch (error) {
     console.error('Database initialization error:', error);
+    console.log('Falling back to in-memory storage for development');
+    dbAvailable = false;
   } finally {
     if (connection) {
       await connection.close();
@@ -238,7 +252,6 @@ async function recordOnBlockchain(messageId, hash) {
     await contract.methods.recordMessage(
       messageId,
       hash,
-      accounts[0],
       Math.floor(Date.now() / 1000)
     ).send({ from: accounts[0], gas: 300000 });
 
@@ -269,14 +282,35 @@ function authenticateToken(req, res, next) {
 // Store connected users
 const connectedUsers = new Map();
 
+// In-memory storage fallback
+const inMemoryUsers = new Map();
+const inMemoryMessages = new Map();
+let dbAvailable = false;
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
 
   // User joins with authentication
-  socket.on('user_join', (userData) => {
+  socket.on('user_join', async (userData) => {
     socket.userId = userData.user_id;
     socket.username = userData.username;
+    
+    // Update user online status in database
+    let connection;
+    try {
+      connection = await oracledb.getConnection(dbConfig);
+      await connection.execute(
+        'UPDATE users SET is_online = 1, last_seen = SYSDATE WHERE user_id = :user_id',
+        [userData.user_id]
+      );
+      await connection.commit();
+    } catch (error) {
+      console.error('Error updating user online status:', error);
+    } finally {
+      if (connection) await connection.close();
+    }
+    
     connectedUsers.set(userData.user_id, {
       user_id: userData.user_id,
       username: userData.username,
@@ -328,51 +362,75 @@ io.on('connection', (socket) => {
       const hash = generateMessageHash(messageData);
       const blockchainHash = await recordOnBlockchain(messageId, hash);
 
-      // Save to database with correct parameter mapping
-      let connection;
-      try {
-        connection = await oracledb.getConnection(dbConfig);
-        await connection.execute(
-          `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, blockchain_hash, created_at)
-           VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :blockchain_hash, :created_at)`,
-          {
-            message_id: messageId,
-            room_id: data.room_id,
-            sender_id: data.sender_id,
-            content: data.content,
-            message_type: data.message_type || 'text',
-            blockchain_hash: blockchainHash,
-            created_at: timestamp
-          }
-        );
-        await connection.commit();
+      let username = 'Unknown';
 
-        // Get username for the message
-        const userResult = await connection.execute(
-          'SELECT username FROM users WHERE user_id = :user_id',
-          [data.sender_id]
-        );
-        
-        const username = userResult.rows.length > 0 ? userResult.rows[0][0] : 'Unknown';
+      if (dbAvailable) {
+        // Save to database with correct parameter mapping
+        let connection;
+        try {
+          connection = await oracledb.getConnection(dbConfig);
+          await connection.execute(
+            `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, blockchain_hash, created_at)
+             VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :blockchain_hash, :created_at)`,
+            {
+              message_id: messageId,
+              room_id: data.room_id,
+              sender_id: data.sender_id,
+              content: data.content,
+              message_type: data.message_type || 'text',
+              blockchain_hash: blockchainHash,
+              created_at: timestamp
+            }
+          );
+          await connection.commit();
 
-        // Broadcast message to room with username
-        const fullMessage = {
+          // Get username for the message
+          const userResult = await connection.execute(
+            'SELECT username FROM users WHERE user_id = :user_id',
+            [data.sender_id]
+          );
+          
+          username = userResult.rows.length > 0 ? userResult.rows[0][0] : 'Unknown';
+
+        } finally {
+          if (connection) await connection.close();
+        }
+      } else {
+        // Use in-memory storage
+        const roomMessages = inMemoryMessages.get(data.room_id) || [];
+        roomMessages.push({
           message_id: messageId,
           room_id: data.room_id,
           sender_id: data.sender_id,
-          username: username,
           content: data.content,
           message_type: data.message_type || 'text',
           blockchain_hash: blockchainHash,
-          created_at: timestamp
-        };
+          timestamp: timestamp.toISOString(),
+          created_at: timestamp.toISOString()
+        });
+        inMemoryMessages.set(data.room_id, roomMessages);
         
-        io.to(data.room_id).emit('new_message', fullMessage);
-        console.log(`Message sent to room ${data.room_id} by ${username}`);
-
-      } finally {
-        if (connection) await connection.close();
+        // Get username from connected users or fallback
+        const user = connectedUsers.get(data.sender_id);
+        username = user ? user.username : `User-${data.sender_id.substring(0, 8)}`;
       }
+
+      // Broadcast message to room with username
+      const fullMessage = {
+        message_id: messageId,
+        room_id: data.room_id,
+        sender_id: data.sender_id,
+        user_id: data.sender_id,
+        username: username,
+        content: data.content,
+        message_type: data.message_type || 'text',
+        blockchain_hash: blockchainHash,
+        timestamp: timestamp.toISOString(),
+        created_at: timestamp.toISOString()
+      };
+      
+      io.to(data.room_id).emit('new_message', fullMessage);
+      console.log(`Message sent to room ${data.room_id} by ${username}`);
 
     } catch (error) {
       console.error('Error sending message:', error);
@@ -394,8 +452,23 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('disconnect', () => {
+  socket.on('disconnect', async () => {
     if (socket.userId) {
+      // Update user offline status in database
+      let connection;
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        await connection.execute(
+          'UPDATE users SET is_online = 0, last_seen = SYSDATE WHERE user_id = :user_id',
+          [socket.userId]
+        );
+        await connection.commit();
+      } catch (error) {
+        console.error('Error updating user offline status:', error);
+      } finally {
+        if (connection) await connection.close();
+      }
+      
       connectedUsers.delete(socket.userId);
       // Broadcast updated user list
       io.emit('users_update', Array.from(connectedUsers.values()));
@@ -501,40 +574,50 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
 
 // Get messages for a room
 app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
-  let connection;
   try {
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(
-      `SELECT m.*, u.username 
-       FROM messages m 
-       JOIN users u ON m.sender_id = u.user_id 
-       WHERE m.room_id = :room_id 
-       ORDER BY m.created_at DESC 
-       FETCH FIRST 50 ROWS ONLY`,
-      [req.params.roomId]
-    );
+    if (dbAvailable) {
+      let connection;
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          `SELECT m.*, u.username 
+           FROM messages m 
+           JOIN users u ON m.sender_id = u.user_id 
+           WHERE m.room_id = :room_id 
+           ORDER BY m.created_at DESC 
+           FETCH FIRST 50 ROWS ONLY`,
+          [req.params.roomId]
+        );
 
-    const messages = result.rows.map(row => ({
-      message_id: row[0],
-      room_id: row[1],
-      sender_id: row[2],
-      content: row[3],
-      message_type: row[4],
-      file_url: row[5],
-      reply_to: row[6],
-      created_at: row[7],
-      blockchain_hash: row[8],
-      is_edited: row[9],
-      edited_at: row[10],
-      username: row[11]
-    }));
+        const messages = result.rows.map(row => ({
+          message_id: row[0],
+          room_id: row[1],
+          sender_id: row[2],
+          user_id: row[2],
+          content: row[3],
+          message_type: row[4],
+          file_url: row[5],
+          reply_to: row[6],
+          timestamp: row[7],
+          created_at: row[7],
+          blockchain_hash: row[8],
+          is_edited: row[9],
+          edited_at: row[10],
+          username: row[11]
+        }));
 
-    res.json(messages.reverse());
+        res.json(messages.reverse());
+      } finally {
+        if (connection) await connection.close();
+      }
+    } else {
+      // Use in-memory storage
+      const roomMessages = inMemoryMessages.get(req.params.roomId) || [];
+      res.json(roomMessages);
+    }
   } catch (error) {
     console.error('Error fetching messages:', error);
     res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (connection) await connection.close();
   }
 });
 

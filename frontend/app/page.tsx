@@ -36,12 +36,14 @@ export default function ChatDashboard() {
   const [socket, setSocket] = useState<any>(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
 
+  const getApiBase = () => {
+    return 'http://localhost:5000';
+  };
+
   const fetchMessages = async () => {
     try {
       const token = localStorage.getItem('token');
-      const apiBase = window.location.hostname === 'localhost' 
-        ? 'http://localhost:5000' 
-        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      const apiBase = getApiBase();
 
       const response = await fetch(`${apiBase}/api/rooms/${currentRoom}/messages`, {
         headers: {
@@ -60,9 +62,7 @@ export default function ChatDashboard() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const apiBase = window.location.hostname === 'localhost' 
-        ? 'http://localhost:5000' 
-        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      const apiBase = getApiBase();
 
       const url = isRegistering
         ? `${apiBase}/api/auth/register`
@@ -82,7 +82,9 @@ export default function ChatDashboard() {
         const data = await response.json();
         localStorage.setItem('token', data.token);
         localStorage.setItem('user_id', data.user.user_id);
+        localStorage.setItem('username', data.user.username);
         setUsername(data.user.username);
+        setCurrentUser(data.user);
         setIsLoggedIn(true);
       } else {
         alert(isRegistering ? 'Registration failed' : 'Login failed');
@@ -95,14 +97,23 @@ export default function ChatDashboard() {
 
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (newMessage.trim() && socket) {
+    if (newMessage.trim() && socket && socket.connected) {
+      const userId = localStorage.getItem('user_id');
+      console.log('Sending message:', { room_id: currentRoom, sender_id: userId, content: newMessage });
+      
       socket.emit('send_message', {
         room_id: currentRoom,
-        sender_id: localStorage.getItem('user_id'),
+        sender_id: userId,
         content: newMessage,
         message_type: 'text'
       });
       setNewMessage('');
+    } else {
+      console.error('Cannot send message:', { 
+        hasMessage: !!newMessage.trim(), 
+        hasSocket: !!socket, 
+        socketConnected: socket?.connected 
+      });
     }
   };
 
@@ -116,9 +127,7 @@ export default function ChatDashboard() {
 
     try {
       const token = localStorage.getItem('token');
-      const apiBase = window.location.hostname === 'localhost' 
-        ? 'http://localhost:5000' 
-        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      const apiBase = getApiBase();
 
       const response = await fetch(`${apiBase}/api/upload`, {
         method: 'POST',
@@ -141,72 +150,27 @@ export default function ChatDashboard() {
   useEffect(() => {
     if (isLoggedIn && username) {
       // Create Socket.IO connection
-      const socketUrl = window.location.hostname === 'localhost' 
-        ? 'http://localhost:5000' 
-        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      const socketUrl = getApiBase();
 
       const newSocket = io(socketUrl, {
-        transports: ['websocket', 'polling']
-      });
-      setSocket(newSocket);
-
-      // Join as user
-      newSocket.emit('user_join', {
-        user_id: localStorage.getItem('user_id') || username,
-        username: username
-      });
-
-      // Join current room
-      newSocket.emit('join_room', currentRoom);
-
-      // Listen for new messages
-      newSocket.on('new_message', (message: Message) => {
-        console.log('Received message:', message);
-        setMessages(prev => [...prev, message]);
-      });
-
-      // Listen for user updates
-      newSocket.on('users_update', (users: User[]) => {
-        console.log('Users update:', users);
-        setOnlineUsers(users);
-      });
-
-      // Listen for user joined room
-      newSocket.on('user_joined_room', (data: any) => {
-        console.log('User joined room:', data);
-      });
-
-      // Listen for typing indicators
-      newSocket.on('user_typing', (data: any) => {
-        console.log('User typing:', data);
-      });
-
-      newSocket.on('user_stop_typing', (data: any) => {
-        console.log('User stopped typing:', data);
-      });
-
-      // Fetch initial messages
-      fetchMessages();
-
-      return () => {
-        newSocket.close();
-      };
-    }
-  }, [isLoggedIn, currentRoom, username]);
-
-  useEffect(() => {
-    if (isLoggedIn && username) {
-      // Create Socket.IO connection
-      const socketUrl = window.location.hostname === 'localhost' 
-        ? 'http://localhost:5000' 
-        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
-
-      const newSocket = io(socketUrl, {
-        transports: ['websocket', 'polling']
+        transports: ['websocket', 'polling'],
+        forceNew: true,
+        timeout: 20000
       });
 
       newSocket.on('connect', () => {
         console.log('Connected to server with socket ID:', newSocket.id);
+        
+        const userId = localStorage.getItem('user_id');
+        const storedUsername = localStorage.getItem('username') || username;
+        
+        // Join as user
+        newSocket.emit('user_join', {
+          user_id: userId,
+          username: storedUsername
+        });
+
+        // Join current room
         newSocket.emit('join_room', currentRoom);
       });
 
@@ -218,17 +182,6 @@ export default function ChatDashboard() {
         console.log('Socket disconnected:', reason);
       });
 
-      setSocket(newSocket);
-
-      // Join as user
-      newSocket.emit('user_join', {
-        user_id: localStorage.getItem('user_id') || username,
-        username: username
-      });
-
-      // Join current room
-      newSocket.emit('join_room', currentRoom);
-
       // Listen for new messages
       newSocket.on('new_message', (message: Message) => {
         console.log('Received message:', message);
@@ -254,6 +207,8 @@ export default function ChatDashboard() {
       newSocket.on('user_stop_typing', (data: any) => {
         console.log('User stopped typing:', data);
       });
+
+      setSocket(newSocket);
 
       // Fetch initial messages
       fetchMessages();
@@ -266,10 +221,13 @@ export default function ChatDashboard() {
 
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (token) {
-      // Auto-login if token exists
+    const storedUsername = localStorage.getItem('username');
+    const storedUserId = localStorage.getItem('user_id');
+    
+    if (token && storedUsername) {
+      setUsername(storedUsername);
+      setCurrentUser({ user_id: storedUserId, username: storedUsername });
       setIsLoggedIn(true);
-      // You might want to verify the token here
     }
   }, []);
 
