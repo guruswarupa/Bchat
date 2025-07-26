@@ -127,10 +127,10 @@ export default function RoomsPage() {
 
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-center">
+      <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-white">
+        <div className="bg-[#2c2c2e] p-8 rounded-xl shadow-xl text-center">
           <h1 className="text-2xl font-bold mb-4">Please log in to view rooms</h1>
-          <a href="/" className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700">
+          <a href="/" className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700 transition-colors">
             Go to Login
           </a>
         </div>
@@ -139,24 +139,24 @@ export default function RoomsPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-[#1e1e1e] text-white">
       {/* Header */}
-      <div className="bg-white shadow-sm p-4 border-b">
-        <div className="flex justify-between items-center">
+      <div className="bg-[#2c2c2e] shadow-sm p-4 sm:p-6 border-b border-[#3a3a3c]">
+        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center space-y-4 sm:space-y-0">
           <div>
-            <h1 className="text-2xl font-bold">Room Management</h1>
-            <p className="text-gray-600">Manage and join chat rooms</p>
+            <h1 className="text-2xl font-bold text-white">Room Management</h1>
+            <p className="text-gray-400">Manage and join chat rooms</p>
           </div>
-          <div className="space-x-2">
+          <div className="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2">
             <button
               onClick={() => setShowCreateForm(true)}
-              className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+              className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
             >
               Create Room
             </button>
             <a
               href="/"
-              className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700 inline-block"
+              className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors text-center"
             >
               Back to Chat
             </a>
@@ -166,23 +166,23 @@ export default function RoomsPage() {
 
       {/* Create Room Form Modal */}
       {showCreateForm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-          <div className="bg-white p-6 rounded-lg shadow-lg w-96">
-            <h3 className="text-lg font-semibold mb-4">Create New Room</h3>
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4 text-white">Create New Room</h3>
             <form onSubmit={createRoom} className="space-y-4">
               <input
                 type="text"
                 placeholder="Room Name"
                 value={newRoom.room_name}
                 onChange={(e) => setNewRoom(prev => ({ ...prev, room_name: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-md"
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
                 required
               />
               <textarea
                 placeholder="Description (optional)"
                 value={newRoom.description}
                 onChange={(e) => setNewRoom(prev => ({ ...prev, description: e.target.value }))}
-                className="w-full px-3 py-2 border rounded-md"
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
                 rows={3}
               />
               <div className="flex items-center space-x-2">
@@ -191,8 +191,9 @@ export default function RoomsPage() {
                   id="private"
                   checked={newRoom.is_private}
                   onChange={(e) => setNewRoom(prev => ({ ...prev, is_private: e.target.checked }))}
+                  className="rounded border-[#48484a] bg-[#3a3a3c] text-blue-600 focus:ring-blue-500"
                 />
-                <label htmlFor="private">Private Room</label>
+                <label htmlFor="private" className="text-white">Private Room</label>
               </div>
               {newRoom.is_private && (
                 <input
@@ -200,14 +201,14 @@ export default function RoomsPage() {
                   placeholder="Room PIN"
                   value={newRoom.room_pin}
                   onChange={(e) => setNewRoom(prev => ({ ...prev, room_pin: e.target.value }))}
-                  className="w-full px-3 py-2 border rounded-md"
+                  className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
                   required
                 />
               )}
               <div className="flex space-x-2">
                 <button
                   type="submit"
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
                 >
                   Create
                 </button>
@@ -217,7 +218,7 @@ export default function RoomsPage() {
                     setShowCreateForm(false);
                     setNewRoom({ room_name: '', description: '', is_private: false, room_pin: '' });
                   }}
-                  className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
+                  className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
                 >
                   Cancel
                 </button>
@@ -228,45 +229,45 @@ export default function RoomsPage() {
       )}
 
       {/* Rooms List */}
-      <div className="p-6">
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      <div className="p-4 sm:p-6">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {/* Default Rooms */}
-          <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
-            <h3 className="text-lg font-semibold mb-2"># general</h3>
-            <p className="text-gray-600 mb-4">General discussion room</p>
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-sm border-l-4 border-green-500">
+            <h3 className="text-lg font-semibold mb-2 text-white"># general</h3>
+            <p className="text-gray-400 mb-4">General discussion room</p>
             <div className="flex justify-between items-center">
-              <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
+              <span className="text-sm text-green-400 bg-green-900/20 px-2 py-1 rounded-md">Public</span>
               <button
                 onClick={() => joinRoom('general', false)}
-                className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+                className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors"
               >
                 Join
               </button>
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
-            <h3 className="text-lg font-semibold mb-2"># tech</h3>
-            <p className="text-gray-600 mb-4">Technology discussions</p>
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-sm border-l-4 border-green-500">
+            <h3 className="text-lg font-semibold mb-2 text-white"># tech</h3>
+            <p className="text-gray-400 mb-4">Technology discussions</p>
             <div className="flex justify-between items-center">
-              <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
+              <span className="text-sm text-green-400 bg-green-900/20 px-2 py-1 rounded-md">Public</span>
               <button
                 onClick={() => joinRoom('tech', false)}
-                className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+                className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors"
               >
                 Join
               </button>
             </div>
           </div>
 
-          <div className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-green-500">
-            <h3 className="text-lg font-semibold mb-2"># random</h3>
-            <p className="text-gray-600 mb-4">Random topics and discussions</p>
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-sm border-l-4 border-green-500">
+            <h3 className="text-lg font-semibold mb-2 text-white"># random</h3>
+            <p className="text-gray-400 mb-4">Random topics and discussions</p>
             <div className="flex justify-between items-center">
-              <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
+              <span className="text-sm text-green-400 bg-green-900/20 px-2 py-1 rounded-md">Public</span>
               <button
                 onClick={() => joinRoom('random', false)}
-                className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+                className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors"
               >
                 Join
               </button>
@@ -275,20 +276,20 @@ export default function RoomsPage() {
 
           {/* Custom Rooms */}
           {rooms.map((room) => (
-            <div key={room.room_id} className="bg-white p-6 rounded-lg shadow-sm border-l-4 border-blue-500">
-              <h3 className="text-lg font-semibold mb-2"># {room.room_name}</h3>
-              <p className="text-gray-600 mb-4">{room.description || 'No description'}</p>
+            <div key={room.room_id} className="bg-[#2c2c2e] p-6 rounded-xl shadow-sm border-l-4 border-blue-500">
+              <h3 className="text-lg font-semibold mb-2 text-white"># {room.room_name}</h3>
+              <p className="text-gray-400 mb-4">{room.description || 'No description'}</p>
               <div className="flex justify-between items-center">
-                <span className={`text-sm px-2 py-1 rounded ${
+                <span className={`text-sm px-2 py-1 rounded-md ${
                   room.is_private 
-                    ? 'text-orange-600 bg-orange-100' 
-                    : 'text-green-600 bg-green-100'
+                    ? 'text-orange-400 bg-orange-900/20' 
+                    : 'text-green-400 bg-green-900/20'
                 }`}>
                   {room.is_private ? 'Private' : 'Public'}
                 </span>
                 <button
                   onClick={() => joinRoom(room.room_id, room.is_private)}
-                  className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
+                  className="bg-blue-600 text-white px-3 py-1 rounded-md hover:bg-blue-700 transition-colors"
                 >
                   Join
                 </button>
@@ -302,7 +303,7 @@ export default function RoomsPage() {
 
         {rooms.length === 0 && (
           <div className="text-center py-8">
-            <p className="text-gray-600">No custom rooms created yet. Create your first room!</p>
+            <p className="text-gray-400">No custom rooms created yet. Create your first room!</p>
           </div>
         )}
       </div>

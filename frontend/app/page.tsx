@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 
 interface Message {
@@ -38,6 +38,8 @@ export default function ChatDashboard() {
   const [showPinDialog, setShowPinDialog] = useState(false);
   const [pendingRoom, setPendingRoom] = useState('');
   const [roomPin, setRoomPin] = useState('');
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const getApiBase = () => {
     return 'http://localhost:5000';
@@ -329,6 +331,11 @@ export default function ChatDashboard() {
     window.history.replaceState({}, '', url.toString());
   }, [currentRoom]);
 
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   if (!isLoggedIn) {
     return (
       <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-white">
@@ -383,92 +390,142 @@ export default function ChatDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-[#1e1e1e] text-white flex flex-col md:flex-row">
-      {/* Sidebar */}
-      <aside className="md:w-64 w-full bg-[#2c2c2e] p-4 border-r border-[#3a3a3c]">
-        <h2 className="text-lg font-semibold mb-4">Online Users ({onlineUsers.length})</h2>
-        <div className="space-y-2">
-          {onlineUsers.map((user) => (
-            <div key={user.user_id} className="flex items-center space-x-2">
-              <span className="w-2 h-2 bg-green-400 rounded-full"></span>
-              <span className="text-sm text-white">{user.username}</span>
+    <div className="min-h-screen bg-[#1e1e1e] text-white flex flex-col lg:flex-row">
+      {/* Mobile Header - Shows room info and hamburger menu */}
+      <div className="lg:hidden bg-[#2c2c2e] p-4 border-b border-[#3a3a3c] flex justify-between items-center">
+        <div>
+          <h1 className="text-lg font-bold">#{currentRoom}</h1>
+          <p className="text-xs text-gray-400">Welcome, {username}!</p>
+        </div>
+        <button 
+          onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+          className="bg-[#48484a] hover:bg-[#5c5c5e] px-3 py-2 rounded-md"
+        >
+          ☰
+        </button>
+      </div>
+
+      {/* Sidebar - Hidden on mobile by default */}
+      <aside className={`
+        lg:w-64 w-full bg-[#2c2c2e] border-r border-[#3a3a3c]
+        lg:block ${showMobileSidebar ? 'block' : 'hidden'}
+        lg:relative absolute lg:h-screen h-[calc(100vh-80px)] z-20 flex flex-col
+      `}>
+        {/* Mobile close button - Fixed header */}
+        <div className="lg:hidden flex justify-between items-center p-4 border-b border-[#3a3a3c] flex-shrink-0">
+          <h2 className="text-lg font-semibold">Menu</h2>
+          <button 
+            onClick={() => setShowMobileSidebar(false)}
+            className="bg-[#48484a] hover:bg-[#5c5c5e] px-3 py-2 rounded-md text-white"
+          >
+            ✕
+          </button>
+        </div>
+        
+        {/* Desktop header - Fixed */}
+        <div className="hidden lg:block p-4 border-b border-[#3a3a3c] flex-shrink-0">
+          <h2 className="text-lg font-semibold">Online Users ({onlineUsers.length})</h2>
+        </div>
+
+        {/* Scrollable content area */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-6">
+          {/* Mobile users header */}
+          <div className="lg:hidden">
+            <h3 className="text-md font-medium mb-4">Online Users ({onlineUsers.length})</h3>
+          </div>
+
+          {/* Online Users List - Scrollable */}
+          <div className="space-y-2 max-h-48 overflow-y-auto">
+            {onlineUsers.map((user) => (
+              <div key={user.user_id} className="flex items-center space-x-2">
+                <span className="w-2 h-2 bg-green-400 rounded-full flex-shrink-0"></span>
+                <span className="text-sm text-white truncate">{user.username}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Rooms Section */}
+          <div>
+            <h3 className="text-sm font-medium mb-2">Rooms</h3>
+            <div className="space-y-1">
+              {['general', 'tech', 'random'].map((room) => (
+                <button
+                  key={room}
+                  onClick={() => {
+                    switchRoom(room);
+                    setShowMobileSidebar(false);
+                  }}
+                  className={`w-full text-left px-2 py-2 rounded text-sm transition-colors ${
+                    currentRoom === room
+                      ? 'bg-blue-600 text-white'
+                      : 'hover:bg-[#3a3a3c] text-gray-300'
+                  }`}
+                >
+                  # {room}
+                </button>
+              ))}
             </div>
-          ))}
-        </div>
+          </div>
 
-        <div className="mt-8">
-          <h3 className="text-sm font-medium mb-2">Rooms</h3>
-          {['general', 'tech', 'random'].map((room) => (
-            <button
-              key={room}
-              onClick={() => switchRoom(room)}
-              className={`w-full text-left px-2 py-1 rounded text-sm ${
-                currentRoom === room
-                  ? 'bg-blue-600 text-white'
-                  : 'hover:bg-[#3a3a3c] text-gray-300'
-              }`}
-            >
-              # {room}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-8 text-sm">
-          <a href="/rooms" className="block text-blue-400 hover:underline">Manage Rooms</a>
-          <a href="/files" className="block text-blue-400 hover:underline mt-2">Shared Files</a>
+          {/* Navigation Links */}
+          <div className="text-sm space-y-2">
+            <a href="/rooms" className="block text-blue-400 hover:underline">Manage Rooms</a>
+          </div>
         </div>
       </aside>
 
       {/* Main Chat Area */}
-      <main className="flex-1 flex flex-col">
-        <header className="bg-[#2c2c2e] p-4 border-b border-[#3a3a3c]">
+      <main className="flex-1 flex flex-col h-screen lg:h-full">
+        {/* Desktop Header - Always visible */}
+        <header className="hidden lg:block bg-[#2c2c2e] p-4 border-b border-[#3a3a3c] flex-shrink-0">
           <h1 className="text-lg font-bold">#{currentRoom}</h1>
           <p className="text-xs text-gray-400">Welcome, {username}!</p>
         </header>
 
-        {/* Messages */}
-        <section className="flex-1 overflow-y-auto p-4 space-y-4">
+        {/* Messages Container - Scrollable */}
+        <div className="flex-1 overflow-y-auto p-2 sm:p-4 space-y-2 sm:space-y-4 scroll-smooth">
           {messages.map((msg) => (
-            <div key={msg.message_id} className="bg-[#3a3a3c] p-3 rounded-xl shadow">
-              <div className="flex items-center text-sm text-gray-300 mb-1">
-                <span className="font-semibold text-white mr-2">{msg.username}</span>
-                <span>{new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}</span>
+            <div key={msg.message_id} className="bg-[#3a3a3c] p-2 sm:p-3 rounded-xl shadow">
+              <div className="flex flex-col sm:flex-row sm:items-center text-sm text-gray-300 mb-1 space-y-1 sm:space-y-0">
+                <span className="font-semibold text-white sm:mr-2">{msg.username}</span>
+                <span className="text-xs sm:text-sm">{new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}</span>
                 {msg.blockchain_hash && (
-                  <span className="ml-2 text-green-400 text-xs">🔗 Verified</span>
+                  <span className="sm:ml-2 text-green-400 text-xs">🔗 Verified</span>
                 )}
               </div>
-              <p className="text-white text-sm">{msg.content}</p>
+              <p className="text-white text-sm break-words">{msg.content}</p>
               {msg.message_type === 'file' && msg.file_url && (
                 <a
                   href={msg.file_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-400 hover:underline text-xs"
+                  className="text-blue-400 hover:underline text-xs block mt-2"
                 >
                   📎 Download File
                 </a>
               )}
             </div>
           ))}
-        </section>
+          <div ref={messagesEndRef} />
+        </div>
 
-        {/* Message Input */}
-        <footer className="bg-[#2c2c2e] p-4 border-t border-[#3a3a3c]">
+        {/* Message Input - Fixed at bottom */}
+        <footer className="bg-[#2c2c2e] p-2 sm:p-4 border-t border-[#3a3a3c] flex-shrink-0">
           <form onSubmit={sendMessage} className="flex gap-2">
             <input
               type="text"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               placeholder="Type your message..."
-              className="flex-1 px-3 py-2 rounded-md bg-[#3a3a3c] border border-[#48484a] text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 px-3 py-2 rounded-md bg-[#3a3a3c] border border-[#48484a] text-white focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
             />
-            <label className="cursor-pointer bg-[#48484a] hover:bg-[#5c5c5e] px-4 py-2 rounded-md">
+            <label className="cursor-pointer bg-[#48484a] hover:bg-[#5c5c5e] px-2 sm:px-4 py-2 rounded-md flex-shrink-0">
               📎
               <input type="file" onChange={handleFileUpload} className="hidden" />
             </label>
             <button
               type="submit"
-              className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-md text-white"
+              className="bg-blue-600 hover:bg-blue-700 px-3 sm:px-6 py-2 rounded-md text-white text-sm flex-shrink-0"
             >
               Send
             </button>
