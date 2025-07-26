@@ -16,14 +16,20 @@ const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: ["http://localhost:3000", "http://0.0.0.0:3000", "https://*.replit.dev", "https://*.repl.co"],
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 const port = 5000;
 
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:3000", "http://0.0.0.0:3000", "https://*.replit.dev", "https://*.repl.co"],
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 app.use(express.json());
 
 // Oracle DB Configuration

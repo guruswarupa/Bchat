@@ -23,11 +23,15 @@ interface User {
 }
 
 export default function ChatDashboard() {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('');
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isRegistering, setIsRegistering] = useState(false);
+  const [currentUser, setCurrentUser] = useState<any>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [currentRoom, setCurrentRoom] = useState('general');
-  const [username, setUsername] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [socket, setSocket] = useState<any>(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
@@ -35,25 +39,43 @@ export default function ChatDashboard() {
   const fetchMessages = async () => {
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch(`http://0.0.0.0:5000/api/rooms/${currentRoom}/messages`, {
+      const apiBase = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      
+      const response = await fetch(`${apiBase}/api/rooms/${currentRoom}/messages`, {
         headers: {
           'Authorization': `Bearer ${token}`
         }
       });
       const data = await response.json();
-      setMessages(data);
+      // Ensure data is an array
+      setMessages(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching messages:', error);
+      setMessages([]); // Set empty array on error
     }
   };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const response = await fetch('http://0.0.0.0:5000/api/auth/login', {
+      const apiBase = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      
+      const url = isRegistering
+        ? `${apiBase}/api/auth/register`
+        : `${apiBase}/api/auth/login`;
+
+      const payload = isRegistering
+        ? { username: loginForm.username, email, password: loginForm.password }
+        : { username: loginForm.username, password: loginForm.password };
+
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(loginForm)
+        body: JSON.stringify(payload)
       });
 
       if (response.ok) {
@@ -63,10 +85,11 @@ export default function ChatDashboard() {
         setUsername(data.user.username);
         setIsLoggedIn(true);
       } else {
-        alert('Login failed');
+        alert(isRegistering ? 'Registration failed' : 'Login failed');
       }
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('Auth error:', error);
+      alert(isRegistering ? 'Registration failed' : 'Login failed');
     }
   };
 
@@ -93,7 +116,11 @@ export default function ChatDashboard() {
 
     try {
       const token = localStorage.getItem('token');
-      const response = await fetch('http://0.0.0.0:5000/api/upload', {
+      const apiBase = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      
+      const response = await fetch(`${apiBase}/api/upload`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`
@@ -114,7 +141,11 @@ export default function ChatDashboard() {
   useEffect(() => {
     if (isLoggedIn && username) {
       // Create Socket.IO connection
-      const newSocket = io('http://0.0.0.0:5000', {
+      const socketUrl = window.location.hostname === 'localhost' 
+        ? 'http://localhost:5000' 
+        : `https://${window.location.hostname.replace(/frontend-/, '')}-5000.${window.location.hostname.split('.').slice(1).join('.')}`;
+      
+      const newSocket = io(socketUrl, {
         transports: ['websocket', 'polling']
       });
       setSocket(newSocket);
@@ -176,8 +207,20 @@ export default function ChatDashboard() {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="bg-white p-8 rounded-lg shadow-lg w-96">
-          <h1 className="text-2xl font-bold mb-6 text-center">Login to Chat</h1>
+          <h1 className="text-2xl font-bold mb-6 text-center">
+            {isRegistering ? 'Register to Chat' : 'Login to Chat'}
+          </h1>
           <form onSubmit={handleLogin} className="space-y-4">
+            {isRegistering && (
+              <input
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            )}
             <input
               type="text"
               placeholder="Username"
@@ -198,7 +241,16 @@ export default function ChatDashboard() {
               type="submit"
               className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700"
             >
-              Login
+              {isRegistering ? 'Register' : 'Login'}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsRegistering(!isRegistering);
+              }}
+              className="w-full text-blue-600  py-2 rounded-md hover:text-blue-700"
+            >
+              {isRegistering ? 'Already have an account? Login' : 'Need an account? Register'}
             </button>
           </form>
         </div>
@@ -239,7 +291,7 @@ export default function ChatDashboard() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {messages.map((message) => (
+          {Array.isArray(messages) && messages.map((message) => (
             <div key={message.message_id} className="bg-white p-3 rounded-lg shadow-sm">
               <div className="flex items-center space-x-2 mb-1">
                 <span className="font-semibold text-blue-600">{message.username}</span>
