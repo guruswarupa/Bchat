@@ -35,9 +35,11 @@ export default function RoomsPage() {
         }
       });
       const data = await response.json();
-      setRooms(data);
+      // Ensure data is an array
+      setRooms(Array.isArray(data) ? data : []);
     } catch (error) {
       console.error('Error fetching rooms:', error);
+      setRooms([]); // Set empty array on error
     }
   };
 
