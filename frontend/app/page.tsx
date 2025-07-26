@@ -331,9 +331,9 @@ export default function ChatDashboard() {
 
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="bg-white p-8 rounded-lg shadow-lg w-96">
-          <h1 className="text-2xl font-bold mb-6 text-center">
+      <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-white">
+        <div className="bg-[#2c2c2e] p-8 rounded-xl shadow-xl w-full max-w-md">
+          <h1 className="text-2xl font-semibold mb-6 text-center">
             {isRegistering ? 'Register to Chat' : 'Login to Chat'}
           </h1>
           <form onSubmit={handleLogin} className="space-y-4">
@@ -343,7 +343,7 @@ export default function ChatDashboard() {
                 placeholder="Email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
                 required
               />
             )}
@@ -352,7 +352,7 @@ export default function ChatDashboard() {
               placeholder="Username"
               value={loginForm.username}
               onChange={(e) => setLoginForm(prev => ({ ...prev, username: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
               required
             />
             <input
@@ -360,21 +360,19 @@ export default function ChatDashboard() {
               placeholder="Password"
               value={loginForm.password}
               onChange={(e) => setLoginForm(prev => ({ ...prev, password: e.target.value }))}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
               required
             />
             <button
               type="submit"
-              className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700"
+              className="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-md"
             >
               {isRegistering ? 'Register' : 'Login'}
             </button>
             <button
               type="button"
-              onClick={() => {
-                setIsRegistering(!isRegistering);
-              }}
-              className="w-full text-blue-600  py-2 rounded-md hover:text-blue-700"
+              onClick={() => setIsRegistering(!isRegistering)}
+              className="w-full text-blue-400 hover:text-blue-300 text-sm mt-2"
             >
               {isRegistering ? 'Already have an account? Login' : 'Need an account? Register'}
             </button>
@@ -385,158 +383,98 @@ export default function ChatDashboard() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-100 flex">
+    <div className="min-h-screen bg-[#1e1e1e] text-white flex flex-col md:flex-row">
       {/* Sidebar */}
-      <div className="w-64 bg-white shadow-lg p-4">
-        <h2 className="text-xl font-bold mb-4">Online Users ({onlineUsers.length})</h2>
+      <aside className="md:w-64 w-full bg-[#2c2c2e] p-4 border-r border-[#3a3a3c]">
+        <h2 className="text-lg font-semibold mb-4">Online Users ({onlineUsers.length})</h2>
         <div className="space-y-2">
           {onlineUsers.map((user) => (
             <div key={user.user_id} className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-              <span className="text-sm">{user.username}</span>
+              <span className="w-2 h-2 bg-green-400 rounded-full"></span>
+              <span className="text-sm text-white">{user.username}</span>
             </div>
           ))}
         </div>
 
         <div className="mt-8">
-          <h3 className="font-semibold mb-2">Rooms</h3>
-          <div className="space-y-2">
+          <h3 className="text-sm font-medium mb-2">Rooms</h3>
+          {['general', 'tech', 'random'].map((room) => (
             <button
-              onClick={() => switchRoom('general')}
-              className={`block w-full text-left px-2 py-1 rounded ${
-                currentRoom === 'general' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+              key={room}
+              onClick={() => switchRoom(room)}
+              className={`w-full text-left px-2 py-1 rounded text-sm ${
+                currentRoom === room
+                  ? 'bg-blue-600 text-white'
+                  : 'hover:bg-[#3a3a3c] text-gray-300'
               }`}
             >
-              # general
+              # {room}
             </button>
-            <button
-              onClick={() => switchRoom('tech')}
-              className={`block w-full text-left px-2 py-1 rounded ${
-                currentRoom === 'tech' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
-              }`}
-            >
-              # tech
-            </button>
-            <button
-              onClick={() => switchRoom('random')}
-              className={`block w-full text-left px-2 py-1 rounded ${
-                currentRoom === 'random' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
-              }`}
-            >
-              # random
-            </button>
-          </div>
+          ))}
         </div>
 
-        <div className="mt-8">
-          <h3 className="font-semibold mb-2">Navigation</h3>
-          <div className="space-y-2">
-            <a href="/rooms" className="block text-blue-600 hover:underline">Manage Rooms</a>
-            <a href="/files" className="block text-blue-600 hover:underline">Shared Files</a>
-          </div>
+        <div className="mt-8 text-sm">
+          <a href="/rooms" className="block text-blue-400 hover:underline">Manage Rooms</a>
+          <a href="/files" className="block text-blue-400 hover:underline mt-2">Shared Files</a>
         </div>
-      </div>
+      </aside>
 
-      {/* Main Chat */}
-      <div className="flex-1 flex flex-col">
-        {/* Header */}
-        <div className="bg-white shadow-sm p-4 border-b">
-          <h1 className="text-xl font-semibold">#{currentRoom}</h1>
-          <p className="text-sm text-gray-600">Welcome, {username}!</p>
-        </div>
-
-        {/* PIN Dialog */}
-        {showPinDialog && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white p-6 rounded-lg shadow-lg">
-              <h3 className="text-lg font-semibold mb-4">Enter Room PIN</h3>
-              <input
-                type="password"
-                value={roomPin}
-                onChange={(e) => setRoomPin(e.target.value)}
-                className="w-full px-3 py-2 border rounded-md mb-4"
-                placeholder="Enter PIN"
-                onKeyPress={(e) => e.key === 'Enter' && verifyPin()}
-              />
-              <div className="flex space-x-2">
-                <button
-                  onClick={verifyPin}
-                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
-                >
-                  Verify
-                </button>
-                <button
-                  onClick={() => {
-                    setShowPinDialog(false);
-                    setRoomPin('');
-                    setPendingRoom('');
-                  }}
-                  className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+      {/* Main Chat Area */}
+      <main className="flex-1 flex flex-col">
+        <header className="bg-[#2c2c2e] p-4 border-b border-[#3a3a3c]">
+          <h1 className="text-lg font-bold">#{currentRoom}</h1>
+          <p className="text-xs text-gray-400">Welcome, {username}!</p>
+        </header>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4">
-          {Array.isArray(messages) && messages.map((message) => (
-            <div key={message.message_id} className="bg-white p-3 rounded-lg shadow-sm">
-              <div className="flex items-center space-x-2 mb-1">
-                <span className="font-semibold text-blue-600">{message.username}</span>
-                <span className="text-xs text-gray-500">
-                  {new Date(message.timestamp || message.created_at || '').toLocaleTimeString()}
-                </span>
-                {message.blockchain_hash && (
-                  <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded">
-                    🔗 Verified
-                  </span>
+        <section className="flex-1 overflow-y-auto p-4 space-y-4">
+          {messages.map((msg) => (
+            <div key={msg.message_id} className="bg-[#3a3a3c] p-3 rounded-xl shadow">
+              <div className="flex items-center text-sm text-gray-300 mb-1">
+                <span className="font-semibold text-white mr-2">{msg.username}</span>
+                <span>{new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}</span>
+                {msg.blockchain_hash && (
+                  <span className="ml-2 text-green-400 text-xs">🔗 Verified</span>
                 )}
               </div>
-              <p className="text-gray-800">{message.content}</p>
-              {message.message_type === 'file' && message.file_url && (
+              <p className="text-white text-sm">{msg.content}</p>
+              {msg.message_type === 'file' && msg.file_url && (
                 <a
-                  href={message.file_url}
+                  href={msg.file_url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-blue-600 hover:underline text-sm"
+                  className="text-blue-400 hover:underline text-xs"
                 >
                   📎 Download File
                 </a>
               )}
             </div>
           ))}
-        </div>
+        </section>
 
         {/* Message Input */}
-        <div className="bg-white border-t p-4">
-          <form onSubmit={sendMessage} className="flex space-x-2">
+        <footer className="bg-[#2c2c2e] p-4 border-t border-[#3a3a3c]">
+          <form onSubmit={sendMessage} className="flex gap-2">
             <input
               type="text"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               placeholder="Type your message..."
-              className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="flex-1 px-3 py-2 rounded-md bg-[#3a3a3c] border border-[#48484a] text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
-            <label className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 cursor-pointer">
+            <label className="cursor-pointer bg-[#48484a] hover:bg-[#5c5c5e] px-4 py-2 rounded-md">
               📎
-              <input
-                type="file"
-                onChange={handleFileUpload}
-                className="hidden"
-              />
+              <input type="file" onChange={handleFileUpload} className="hidden" />
             </label>
             <button
               type="submit"
-              className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700"
+              className="bg-blue-600 hover:bg-blue-700 px-6 py-2 rounded-md text-white"
             >
               Send
             </button>
           </form>
-        </div>
-      </div>
+        </footer>
+      </main>
     </div>
   );
 }
