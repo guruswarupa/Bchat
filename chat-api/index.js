@@ -141,7 +141,7 @@ async function initializeDatabase() {
           created_by VARCHAR2(50),
           created_at DATE DEFAULT SYSDATE,
           is_private NUMBER(1) DEFAULT 0,
-          room_type VARCHAR2(20) DEFAULT ''public'',
+          room_type VARCHAR2(20) DEFAULT 'public',
           room_pin VARCHAR2(50)
         )';
       EXCEPTION
@@ -613,32 +613,6 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Get chat rooms
-app.get('/api/rooms', authenticateToken, async (req, res) => {
-  let connection;
-  try {
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute('SELECT * FROM chat_rooms ORDER BY created_at');
-
-    const rooms = result.rows.map(row => ({
-      room_id: row[0],
-      room_name: row[1],
-      description: row[2],
-      created_by: row[3],
-      created_at: row[4],
-      is_private: row[5],
-      room_type: row[6]
-    }));
-
-    res.json(rooms);
-  } catch (error) {
-    console.error('Error fetching rooms:', error);
-    res.status(500).json({ error: 'Database error' });
-  } finally {
-    if (connection) await connection.close();
-  }
-});
-
 // Get messages for a room
 app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
   try {
@@ -758,6 +732,34 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
   }
 });
 
+// Get all rooms
+app.get('/api/rooms', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await oracledb.getConnection(dbConfig);
+    const result = await connection.execute(
+      'SELECT room_id, room_name, description, created_by, created_at, is_private, room_type FROM chat_rooms ORDER BY created_at DESC'
+    );
+
+    const rooms = result.rows.map(row => ({
+      room_id: row[0],
+      room_name: row[1],
+      description: row[2],
+      created_by: row[3],
+      created_at: row[4],
+      is_private: row[5] === 1,
+      room_type: row[6]
+    }));
+
+    res.json(rooms);
+  } catch (error) {
+    console.error('Error fetching rooms:', error);
+    res.status(500).json({ error: 'Failed to fetch rooms' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
 // Create chat room
 app.post('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
@@ -765,10 +767,27 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
     const { room_name, description, is_private, room_pin } = req.body;
     const roomId = uuidv4();
 
+    console.log('Creating room:', { room_name, is_private, room_pin: room_pin ? '[HIDDEN]' : 'none' });
+
+    if (!dbAvailable) {
+      return res.status(500).json({ error: 'Database not available' });
+    }
+
     connection = await oracledb.getConnection(dbConfig);
+    
+    // Insert the room
     await connection.execute(
-      'INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_pin) VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_pin)',
-      { room_id: roomId, room_name, description, created_by: req.user.user_id, is_private: is_private ? 1 : 0, room_pin: is_private ? room_pin : null }
+      `INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_type, room_pin) 
+       VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_type, :room_pin)`,
+      { 
+        room_id: roomId, 
+        room_name, 
+        description: description || '', 
+        created_by: req.user.user_id, 
+        is_private: is_private ? 1 : 0, 
+        room_type: is_private ? 'private' : 'public',
+        room_pin: is_private && room_pin ? room_pin : null
+      }
     );
 
     // Add creator as room member
@@ -778,10 +797,26 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
     );
 
     await connection.commit();
-    res.status(201).json({ room_id: roomId, room_name, description, created_by: req.user.user_id });
+    console.log('Room created successfully:', roomId);
+    
+    res.status(201).json({ 
+      room_id: roomId, 
+      room_name, 
+      description: description || '', 
+      created_by: req.user.user_id,
+      is_private: is_private,
+      room_type: is_private ? 'private' : 'public'
+    });
   } catch (error) {
     console.error('Error creating room:', error);
-    res.status(500).json({ error: 'Failed to create room' });
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error('Rollback error:', rollbackError);
+      }
+    }
+    res.status(500).json({ error: 'Failed to create room: ' + error.message });
   } finally {
     if (connection) await connection.close();
   }

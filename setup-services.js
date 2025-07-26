@@ -49,7 +49,8 @@ async function setupOracle() {
         created_by VARCHAR2(50),
         created_at DATE DEFAULT SYSDATE,
         is_private NUMBER(1) DEFAULT 0,
-        room_type VARCHAR2(20) DEFAULT 'public'
+        room_type VARCHAR2(20) DEFAULT 'public',
+        room_pin VARCHAR2(50)
       )`,
       `CREATE TABLE messages (
         message_id VARCHAR2(50) PRIMARY KEY,
