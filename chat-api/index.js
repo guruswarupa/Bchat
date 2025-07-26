@@ -769,11 +769,13 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
 
     console.log('Creating room:', { room_name, is_private, room_pin: room_pin ? '[HIDDEN]' : 'none' });
 
-    if (!dbAvailable) {
-      return res.status(500).json({ error: 'Database not available' });
+    // Check if we have database connection
+    try {
+      connection = await oracledb.getConnection(dbConfig);
+    } catch (dbError) {
+      console.error('Database connection failed:', dbError);
+      return res.status(500).json({ error: 'Database connection failed: ' + dbError.message });
     }
-
-    connection = await oracledb.getConnection(dbConfig);
     
     // Insert the room
     await connection.execute(
