@@ -49,7 +49,7 @@ const minioClient = new Minio.Client({
 });
 
 // Web3 Configuration (Ganache)
-const web3 = new Web3('http://ganache:8545');
+const web3 = new Web3('http://localhost:8545');
 
 // Load contract info from deployed contract
 let contractInfo;
