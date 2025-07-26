@@ -448,10 +448,17 @@ io.on('connection', (socket) => {
       } else {
         // Use in-memory storage
         const roomMessages = inMemoryMessages.get(data.room_id) || [];
+        
+        // Get username from connected users or fallback
+        const user = connectedUsers.get(data.sender_id);
+        username = user ? user.username : `User-${data.sender_id.substring(0, 8)}`;
+        
         roomMessages.push({
           message_id: messageId,
           room_id: data.room_id,
           sender_id: data.sender_id,
+          user_id: data.sender_id,
+          username: username, // Store username in memory
           content: data.content,
           message_type: data.message_type || 'text',
           blockchain_hash: blockchainHash,
@@ -459,10 +466,6 @@ io.on('connection', (socket) => {
           created_at: timestamp.toISOString()
         });
         inMemoryMessages.set(data.room_id, roomMessages);
-
-        // Get username from connected users or fallback
-        const user = connectedUsers.get(data.sender_id);
-        username = user ? user.username : `User-${data.sender_id.substring(0, 8)}`;
       }
 
       // Broadcast message to room with username
@@ -558,18 +561,42 @@ app.post('/api/auth/register', async (req, res) => {
     const userId = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    connection = await oracledb.getConnection(dbConfig);
-    await connection.execute(
-      'INSERT INTO users (user_id, username, email, password_hash) VALUES (:user_id, :username, :email, :password_hash)',
-      { user_id: userId, username, email, password_hash: hashedPassword }
-    );
-    await connection.commit();
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        await connection.execute(
+          'INSERT INTO users (user_id, username, email, password_hash) VALUES (:user_id, :username, :email, :password_hash)',
+          { user_id: userId, username, email, password_hash: hashedPassword }
+        );
+        await connection.commit();
+      } catch (dbError) {
+        console.error('Database registration failed, falling back to memory:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      const existingUser = Array.from(inMemoryUsers.values()).find(u => u.username === username || u.email === email);
+      if (existingUser) {
+        return res.status(400).json({ error: 'Username or email already exists' });
+      }
+      
+      inMemoryUsers.set(userId, {
+        user_id: userId,
+        username,
+        email,
+        password_hash: hashedPassword,
+        created_at: new Date().toISOString(),
+        is_online: false
+      });
+    }
 
     const token = jwt.sign({ user_id: userId, username }, JWT_SECRET);
     res.status(201).json({ token, user: { user_id: userId, username, email } });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Registration failed' });
+    res.status(500).json({ error: 'Registration failed: ' + error.message });
   } finally {
     if (connection) await connection.close();
   }
@@ -580,23 +607,38 @@ app.post('/api/auth/login', async (req, res) => {
   let connection;
   try {
     const { username, password } = req.body;
+    let user = null;
 
-    connection = await oracledb.getConnection(dbConfig);
-    const result = await connection.execute(
-      'SELECT user_id, username, email, password_hash FROM users WHERE username = :username',
-      [username]
-    );
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          'SELECT user_id, username, email, password_hash FROM users WHERE username = :username',
+          [username]
+        );
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+        if (result.rows.length > 0) {
+          user = {
+            user_id: result.rows[0][0],
+            username: result.rows[0][1],
+            email: result.rows[0][2],
+            password_hash: result.rows[0][3]
+          };
+        }
+      } catch (dbError) {
+        console.error('Database login failed, falling back to memory:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      user = Array.from(inMemoryUsers.values()).find(u => u.username === username);
     }
 
-    const user = {
-      user_id: result.rows[0][0],
-      username: result.rows[0][1],
-      email: result.rows[0][2],
-      password_hash: result.rows[0][3]
-    };
+    if (!user) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
 
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
@@ -607,7 +649,7 @@ app.post('/api/auth/login', async (req, res) => {
     res.json({ token, user: { user_id: user.user_id, username: user.username, email: user.email } });
   } catch (error) {
     console.error('Login error:', error);
-    res.status(500).json({ error: 'Login failed' });
+    res.status(500).json({ error: 'Login failed: ' + error.message });
   } finally {
     if (connection) await connection.close();
   }
@@ -654,7 +696,18 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
     } else {
       // Use in-memory storage
       const roomMessages = inMemoryMessages.get(req.params.roomId) || [];
-      res.json(roomMessages);
+      
+      // Ensure all messages have usernames, add fallback if missing
+      const messagesWithUsernames = roomMessages.map(msg => {
+        if (!msg.username) {
+          // Try to get username from connected users
+          const user = connectedUsers.get(msg.sender_id || msg.user_id);
+          msg.username = user ? user.username : `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`;
+        }
+        return msg;
+      });
+      
+      res.json(messagesWithUsernames);
     }
   } catch (error) {
     console.error('Error fetching messages:', error);
