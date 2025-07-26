@@ -35,6 +35,9 @@ export default function ChatDashboard() {
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [socket, setSocket] = useState<any>(null);
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
+  const [showPinDialog, setShowPinDialog] = useState(false);
+  const [pendingRoom, setPendingRoom] = useState('');
+  const [roomPin, setRoomPin] = useState('');
 
   const getApiBase = () => {
     return 'http://localhost:5000';
@@ -51,11 +54,86 @@ export default function ChatDashboard() {
         }
       });
       const data = await response.json();
-      // Ensure data is an array
-      setMessages(Array.isArray(data) ? data : []);
+      // Ensure data is an array and filter by current room
+      const roomMessages = Array.isArray(data) ? data.filter(msg => msg.room_id === currentRoom) : [];
+      setMessages(roomMessages);
     } catch (error) {
       console.error('Error fetching messages:', error);
       setMessages([]); // Set empty array on error
+    }
+  };
+
+  const switchRoom = async (roomId: string, roomType?: string) => {
+    if (roomType === 'private' || roomId !== 'general') {
+      // Check if room requires PIN
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`http://localhost:5000/api/rooms/${roomId}/verify-pin`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ pin: '' })
+        });
+
+        if (response.status === 401) {
+          // Room requires PIN
+          setPendingRoom(roomId);
+          setShowPinDialog(true);
+          return;
+        }
+      } catch (error) {
+        console.error('Error checking room:', error);
+      }
+    }
+
+    // Clear current room data immediately
+    setMessages([]);
+    setOnlineUsers([]);
+    
+    // Update current room state
+    setCurrentRoom(roomId);
+    
+    // Switch to room via socket
+    if (socket && socket.connected) {
+      console.log(`Switching to room: ${roomId}`);
+      socket.emit('join_room', roomId);
+    }
+  };
+
+  const verifyPin = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`http://localhost:5000/api/rooms/${pendingRoom}/verify-pin`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ pin: roomPin })
+      });
+
+      if (response.ok) {
+        // PIN verified, switch to room
+        setMessages([]);
+        setOnlineUsers([]);
+        setCurrentRoom(pendingRoom);
+        
+        if (socket && socket.connected) {
+          console.log(`Switching to verified room: ${pendingRoom}`);
+          socket.emit('join_room', pendingRoom);
+        }
+        
+        setShowPinDialog(false);
+        setRoomPin('');
+        setPendingRoom('');
+      } else {
+        alert('Invalid PIN');
+      }
+    } catch (error) {
+      console.error('Error verifying PIN:', error);
+      alert('Error verifying PIN');
     }
   };
 
@@ -170,8 +248,12 @@ export default function ChatDashboard() {
           username: storedUsername
         });
 
-        // Join current room
-        newSocket.emit('join_room', currentRoom);
+        // Join current room after a brief delay to ensure user_join is processed
+        setTimeout(() => {
+          newSocket.emit('join_room', currentRoom);
+          // Fetch messages for the current room
+          fetchMessages();
+        }, 100);
       });
 
       newSocket.on('connect_error', (error: Error) => {
@@ -184,13 +266,16 @@ export default function ChatDashboard() {
 
       // Listen for new messages
       newSocket.on('new_message', (message: Message) => {
-        console.log('Received message:', message);
-        setMessages(prev => [...prev, message]);
+        console.log('Received message for room:', message.room_id, 'current room:', currentRoom);
+        // Only add message if it's for the current room
+        if (message.room_id === currentRoom) {
+          setMessages(prev => [...prev, message]);
+        }
       });
 
-      // Listen for user updates
+      // Listen for user updates (room-specific)
       newSocket.on('users_update', (users: User[]) => {
-        console.log('Users update:', users);
+        console.log('Users update for current room:', users);
         setOnlineUsers(users);
       });
 
@@ -210,9 +295,6 @@ export default function ChatDashboard() {
 
       setSocket(newSocket);
 
-      // Fetch initial messages
-      fetchMessages();
-
       return () => {
         newSocket.close();
       };
@@ -229,7 +311,21 @@ export default function ChatDashboard() {
       setCurrentUser({ user_id: storedUserId, username: storedUsername });
       setIsLoggedIn(true);
     }
+
+    // Check URL parameters for room
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room');
+    if (roomParam) {
+      setCurrentRoom(roomParam);
+    }
   }, []);
+
+  // Update URL when room changes
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set('room', currentRoom);
+    window.history.replaceState({}, '', url.toString());
+  }, [currentRoom]);
 
   if (!isLoggedIn) {
     return (
@@ -301,6 +397,36 @@ export default function ChatDashboard() {
         </div>
 
         <div className="mt-8">
+          <h3 className="font-semibold mb-2">Rooms</h3>
+          <div className="space-y-2">
+            <button
+              onClick={() => switchRoom('general')}
+              className={`block w-full text-left px-2 py-1 rounded ${
+                currentRoom === 'general' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+              }`}
+            >
+              # general
+            </button>
+            <button
+              onClick={() => switchRoom('tech')}
+              className={`block w-full text-left px-2 py-1 rounded ${
+                currentRoom === 'tech' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+              }`}
+            >
+              # tech
+            </button>
+            <button
+              onClick={() => switchRoom('random')}
+              className={`block w-full text-left px-2 py-1 rounded ${
+                currentRoom === 'random' ? 'bg-blue-100 text-blue-800' : 'hover:bg-gray-100'
+              }`}
+            >
+              # random
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-8">
           <h3 className="font-semibold mb-2">Navigation</h3>
           <div className="space-y-2">
             <a href="/rooms" className="block text-blue-600 hover:underline">Manage Rooms</a>
@@ -316,6 +442,41 @@ export default function ChatDashboard() {
           <h1 className="text-xl font-semibold">#{currentRoom}</h1>
           <p className="text-sm text-gray-600">Welcome, {username}!</p>
         </div>
+
+        {/* PIN Dialog */}
+        {showPinDialog && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg">
+              <h3 className="text-lg font-semibold mb-4">Enter Room PIN</h3>
+              <input
+                type="password"
+                value={roomPin}
+                onChange={(e) => setRoomPin(e.target.value)}
+                className="w-full px-3 py-2 border rounded-md mb-4"
+                placeholder="Enter PIN"
+                onKeyPress={(e) => e.key === 'Enter' && verifyPin()}
+              />
+              <div className="flex space-x-2">
+                <button
+                  onClick={verifyPin}
+                  className="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700"
+                >
+                  Verify
+                </button>
+                <button
+                  onClick={() => {
+                    setShowPinDialog(false);
+                    setRoomPin('');
+                    setPendingRoom('');
+                  }}
+                  className="bg-gray-600 text-white px-4 py-2 rounded hover:bg-gray-700"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4">

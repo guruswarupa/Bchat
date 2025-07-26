@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -36,12 +35,12 @@ app.use(express.json());
 const dbConfig = {
   user: 'SYSTEM',
   password: 'oracle',
-  connectString: 'localhost:1521/FREE'
+  connectString: 'oracle-db:1521/FREE'
 };
 
 // MinIO Configuration
 const minioClient = new Minio.Client({
-  endPoint: 'localhost',
+  endPoint: 'minio',
   port: 9000,
   useSSL: false,
   accessKey: 'minioadmin',
@@ -49,7 +48,7 @@ const minioClient = new Minio.Client({
 });
 
 // Web3 Configuration (Ganache)
-const web3 = new Web3('http://localhost:8545');
+const web3 = new Web3('http://ganache:8545');
 
 // Load contract info from deployed contract
 let contractInfo;
@@ -142,7 +141,8 @@ async function initializeDatabase() {
           created_by VARCHAR2(50),
           created_at DATE DEFAULT SYSDATE,
           is_private NUMBER(1) DEFAULT 0,
-          room_type VARCHAR2(20) DEFAULT ''public''
+          room_type VARCHAR2(20) DEFAULT ''public'',
+          room_pin VARCHAR2(50)
         )';
       EXCEPTION
         WHEN OTHERS THEN
@@ -245,7 +245,7 @@ async function recordOnBlockchain(messageId, hash) {
       console.log('Contract not deployed yet, skipping blockchain recording');
       return hash;
     }
-    
+
     const accounts = await web3.eth.getAccounts();
     const contract = new web3.eth.Contract(chatContractABI, contractAddress);
 
@@ -279,8 +279,9 @@ function authenticateToken(req, res, next) {
   });
 }
 
-// Store connected users
-const connectedUsers = new Map();
+// Store connected users globally and per room
+const connectedUsers = new Map(); // Global user tracking
+const roomUsers = new Map(); // Track users per room: roomId -> Map(userId -> userInfo)
 
 // In-memory storage fallback
 const inMemoryUsers = new Map();
@@ -295,7 +296,7 @@ io.on('connection', (socket) => {
   socket.on('user_join', async (userData) => {
     socket.userId = userData.user_id;
     socket.username = userData.username;
-    
+
     // Update user online status in database
     let connection;
     try {
@@ -310,31 +311,80 @@ io.on('connection', (socket) => {
     } finally {
       if (connection) await connection.close();
     }
-    
+
+    // Store user globally
     connectedUsers.set(userData.user_id, {
       user_id: userData.user_id,
       username: userData.username,
       socket_id: socket.id,
+      current_room: null,
       is_online: true
     });
-    
-    // Broadcast updated user list
-    io.emit('users_update', Array.from(connectedUsers.values()));
+
     console.log(`User ${userData.username} (${userData.user_id}) connected`);
   });
 
   // Join room
   socket.on('join_room', (roomId) => {
+    // Leave current room first
+    if (socket.currentRoom && socket.currentRoom !== roomId) {
+      socket.leave(socket.currentRoom);
+      
+      // Remove user from previous room's user list
+      if (roomUsers.has(socket.currentRoom)) {
+        const prevRoomUsers = roomUsers.get(socket.currentRoom);
+        if (socket.userId && prevRoomUsers.has(socket.userId)) {
+          prevRoomUsers.delete(socket.userId);
+          console.log(`User ${socket.username} left room ${socket.currentRoom}`);
+          
+          // Broadcast updated user list to previous room only
+          io.to(socket.currentRoom).emit('users_update', Array.from(prevRoomUsers.values()));
+          
+          // Clean up empty room
+          if (prevRoomUsers.size === 0) {
+            roomUsers.delete(socket.currentRoom);
+          }
+        }
+      }
+    }
+
+    // Join new room
     socket.join(roomId);
     socket.currentRoom = roomId;
-    console.log(`User ${socket.username || socket.id} joined room ${roomId}`);
     
-    // Notify others in the room
-    socket.to(roomId).emit('user_joined_room', {
-      user_id: socket.userId,
-      username: socket.username,
-      room_id: roomId
-    });
+    // Initialize room users map if it doesn't exist
+    if (!roomUsers.has(roomId)) {
+      roomUsers.set(roomId, new Map());
+    }
+    
+    // Add user to new room's user list
+    if (socket.userId && socket.username) {
+      const roomUsersList = roomUsers.get(roomId);
+      roomUsersList.set(socket.userId, {
+        user_id: socket.userId,
+        username: socket.username,
+        is_online: true
+      });
+      
+      // Update global user's current room
+      if (connectedUsers.has(socket.userId)) {
+        const user = connectedUsers.get(socket.userId);
+        user.current_room = roomId;
+        connectedUsers.set(socket.userId, user);
+      }
+      
+      console.log(`User ${socket.username} joined room ${roomId}, room now has ${roomUsersList.size} users`);
+
+      // Broadcast updated user list ONLY to users in this specific room
+      io.to(roomId).emit('users_update', Array.from(roomUsersList.values()));
+
+      // Notify others in the room that someone joined
+      socket.to(roomId).emit('user_joined_room', {
+        user_id: socket.userId,
+        username: socket.username,
+        room_id: roomId
+      });
+    }
   });
 
   // Leave room
@@ -348,7 +398,7 @@ io.on('connection', (socket) => {
     try {
       const messageId = uuidv4();
       const timestamp = new Date();
-      
+
       // Generate hash and record on blockchain
       const messageData = {
         message_id: messageId,
@@ -358,7 +408,7 @@ io.on('connection', (socket) => {
         message_type: data.message_type || 'text',
         created_at: timestamp
       };
-      
+
       const hash = generateMessageHash(messageData);
       const blockchainHash = await recordOnBlockchain(messageId, hash);
 
@@ -370,12 +420,12 @@ io.on('connection', (socket) => {
         try {
           connection = await oracledb.getConnection(dbConfig);
           await connection.execute(
-            `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, blockchain_hash, created_at)
-             VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :blockchain_hash, :created_at)`,
+            `INSERT INTO messages (message_id, room_id, user_id, content, message_type, blockchain_hash, created_at)
+             VALUES (:message_id, :room_id, :user_id, :content, :message_type, :blockchain_hash, :created_at)`,
             {
               message_id: messageId,
               room_id: data.room_id,
-              sender_id: data.sender_id,
+              user_id: data.sender_id,
               content: data.content,
               message_type: data.message_type || 'text',
               blockchain_hash: blockchainHash,
@@ -389,7 +439,7 @@ io.on('connection', (socket) => {
             'SELECT username FROM users WHERE user_id = :user_id',
             [data.sender_id]
           );
-          
+
           username = userResult.rows.length > 0 ? userResult.rows[0][0] : 'Unknown';
 
         } finally {
@@ -409,7 +459,7 @@ io.on('connection', (socket) => {
           created_at: timestamp.toISOString()
         });
         inMemoryMessages.set(data.room_id, roomMessages);
-        
+
         // Get username from connected users or fallback
         const user = connectedUsers.get(data.sender_id);
         username = user ? user.username : `User-${data.sender_id.substring(0, 8)}`;
@@ -428,7 +478,7 @@ io.on('connection', (socket) => {
         timestamp: timestamp.toISOString(),
         created_at: timestamp.toISOString()
       };
-      
+
       io.to(data.room_id).emit('new_message', fullMessage);
       console.log(`Message sent to room ${data.room_id} by ${username}`);
 
@@ -468,10 +518,27 @@ io.on('connection', (socket) => {
       } finally {
         if (connection) await connection.close();
       }
-      
+
+      // Remove user from current room's user list
+      if (socket.currentRoom && roomUsers.has(socket.currentRoom)) {
+        const currentRoomUsers = roomUsers.get(socket.currentRoom);
+        if (currentRoomUsers.has(socket.userId)) {
+          currentRoomUsers.delete(socket.userId);
+          console.log(`User ${socket.username} removed from room ${socket.currentRoom}, room now has ${currentRoomUsers.size} users`);
+          
+          // Broadcast updated user list ONLY to users in this specific room
+          io.to(socket.currentRoom).emit('users_update', Array.from(currentRoomUsers.values()));
+          
+          // Clean up empty room
+          if (currentRoomUsers.size === 0) {
+            roomUsers.delete(socket.currentRoom);
+            console.log(`Room ${socket.currentRoom} deleted - no users remaining`);
+          }
+        }
+      }
+
+      // Remove from global users
       connectedUsers.delete(socket.userId);
-      // Broadcast updated user list
-      io.emit('users_update', Array.from(connectedUsers.values()));
       console.log(`User ${socket.username} (${socket.userId}) disconnected`);
     }
     console.log('User disconnected:', socket.id);
@@ -582,7 +649,7 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
         const result = await connection.execute(
           `SELECT m.*, u.username 
            FROM messages m 
-           JOIN users u ON m.sender_id = u.user_id 
+           JOIN users u ON m.user_id = u.user_id 
            WHERE m.room_id = :room_id 
            ORDER BY m.created_at DESC 
            FETCH FIRST 50 ROWS ONLY`,
@@ -643,7 +710,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     );
 
     const fileUrl = `http://0.0.0.0:9000/${bucketName}/${fileName}`;
-    
+
     // Save file message to database
     connection = await oracledb.getConnection(dbConfig);
     const timestamp = new Date();
@@ -673,7 +740,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       file_url: fileUrl,
       created_at: timestamp
     };
-    
+
     io.to(roomId).emit('new_message', fileMessage);
     console.log(`File message broadcasted to room ${roomId}`);
 
@@ -695,13 +762,13 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
 app.post('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
-    const { room_name, description, is_private } = req.body;
+    const { room_name, description, is_private, room_pin } = req.body;
     const roomId = uuidv4();
 
     connection = await oracledb.getConnection(dbConfig);
     await connection.execute(
-      'INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private) VALUES (:room_id, :room_name, :description, :created_by, :is_private)',
-      { room_id: roomId, room_name, description, created_by: req.user.user_id, is_private: is_private ? 1 : 0 }
+      'INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_pin) VALUES (:room_id, :room_name, :description, :created_by, :is_private, :room_pin)',
+      { room_id: roomId, room_name, description, created_by: req.user.user_id, is_private: is_private ? 1 : 0, room_pin: is_private ? room_pin : null }
     );
 
     // Add creator as room member
@@ -720,11 +787,47 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
   }
 });
 
+// Verify room PIN
+app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    const { pin } = req.body;
+    const roomId = req.params.roomId;
+
+    connection = await oracledb.getConnection(dbConfig);
+    const result = await connection.execute(
+      'SELECT room_pin, is_private FROM chat_rooms WHERE room_id = :room_id',
+      [roomId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    const [storedPin, isPrivate] = result.rows[0];
+
+    if (!isPrivate) {
+      return res.json({ success: true, message: 'Room is public' });
+    }
+
+    if (storedPin === pin) {
+      return res.json({ success: true, message: 'PIN verified' });
+    } else {
+      return res.status(401).json({ error: 'Invalid PIN' });
+    }
+  } catch (error) {
+    console.error('Error verifying PIN:', error);
+    res.status(500).json({ error: 'Server error' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
 // Get uploaded files
 app.get('/api/files', authenticateToken, async (req, res) => {
   try {
     const bucketName = 'chat-files';
-    
+
     // Check if bucket exists
     const bucketExists = await minioClient.bucketExists(bucketName);
     if (!bucketExists) {
@@ -734,15 +837,15 @@ app.get('/api/files', authenticateToken, async (req, res) => {
     // Get list of objects from MinIO
     const objectsList = [];
     const objectsStream = minioClient.listObjects(bucketName, '', true);
-    
+
     for await (const obj of objectsStream) {
       try {
         // Get object stats to get file size
         const stats = await minioClient.statObject(bucketName, obj.name);
-        
+
         // Extract original filename from the prefixed name (remove timestamp prefix)
         const originalFilename = obj.name.includes('_') ? obj.name.substring(obj.name.indexOf('_') + 1) : obj.name;
-        
+
         objectsList.push({
           file_id: obj.name, // Use object name as file ID
           filename: originalFilename,
