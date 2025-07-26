@@ -64,7 +64,9 @@ export default function ChatDashboard() {
   };
 
   const switchRoom = async (roomId: string, roomType?: string) => {
-    if (roomType === 'private' || roomId !== 'general') {
+    // For any room that's not the default public rooms, check if it requires PIN
+    const publicRooms = ['general', 'tech', 'random'];
+    if (!publicRooms.includes(roomId)) {
       // Check if room requires PIN
       try {
         const token = localStorage.getItem('token');

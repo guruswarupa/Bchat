@@ -77,9 +77,39 @@ export default function RoomsPage() {
     }
   };
 
-  const joinRoom = (roomId: string) => {
-    // Redirect to main chat page with the specific room
-    window.location.href = `/?room=${roomId}`;
+  const joinRoom = async (roomId: string, isPrivate: boolean = false) => {
+    if (isPrivate) {
+      // For private rooms, prompt for PIN first
+      const pin = prompt('This is a private room. Please enter the PIN:');
+      if (!pin) return; // User cancelled
+      
+      try {
+        const token = localStorage.getItem('token');
+        const apiBase = getApiBase();
+        
+        const response = await fetch(`${apiBase}/api/rooms/${roomId}/verify-pin`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+          },
+          body: JSON.stringify({ pin })
+        });
+
+        if (response.ok) {
+          // PIN verified, redirect to room
+          window.location.href = `/?room=${roomId}`;
+        } else {
+          alert('Invalid PIN. Access denied.');
+        }
+      } catch (error) {
+        console.error('Error verifying PIN:', error);
+        alert('Error verifying PIN. Please try again.');
+      }
+    } else {
+      // Public room, join directly
+      window.location.href = `/?room=${roomId}`;
+    }
   };
 
   useEffect(() => {
@@ -207,7 +237,7 @@ export default function RoomsPage() {
             <div className="flex justify-between items-center">
               <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
               <button
-                onClick={() => joinRoom('general')}
+                onClick={() => joinRoom('general', false)}
                 className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
               >
                 Join
@@ -221,7 +251,7 @@ export default function RoomsPage() {
             <div className="flex justify-between items-center">
               <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
               <button
-                onClick={() => joinRoom('tech')}
+                onClick={() => joinRoom('tech', false)}
                 className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
               >
                 Join
@@ -235,7 +265,7 @@ export default function RoomsPage() {
             <div className="flex justify-between items-center">
               <span className="text-sm text-green-600 bg-green-100 px-2 py-1 rounded">Public</span>
               <button
-                onClick={() => joinRoom('random')}
+                onClick={() => joinRoom('random', false)}
                 className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
               >
                 Join
@@ -257,7 +287,7 @@ export default function RoomsPage() {
                   {room.is_private ? 'Private' : 'Public'}
                 </span>
                 <button
-                  onClick={() => joinRoom(room.room_id)}
+                  onClick={() => joinRoom(room.room_id, room.is_private)}
                   className="bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700"
                 >
                   Join
