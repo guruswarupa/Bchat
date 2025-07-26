@@ -260,9 +260,28 @@ function authenticateToken(req, res, next) {
   });
 }
 
+// Store connected users
+const connectedUsers = new Map();
+
 // Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log('User connected:', socket.id);
+
+  // User joins with authentication
+  socket.on('user_join', (userData) => {
+    socket.userId = userData.user_id;
+    socket.username = userData.username;
+    connectedUsers.set(userData.user_id, {
+      user_id: userData.user_id,
+      username: userData.username,
+      socket_id: socket.id,
+      is_online: true
+    });
+    
+    // Broadcast updated user list
+    io.emit('users_update', Array.from(connectedUsers.values()));
+    console.log(`User ${userData.username} (${userData.user_id}) connected`);
+  });
 
   // Join room
   socket.on('join_room', (roomId) => {
@@ -336,6 +355,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (socket.userId) {
+      connectedUsers.delete(socket.userId);
+      // Broadcast updated user list
+      io.emit('users_update', Array.from(connectedUsers.values()));
+      console.log(`User ${socket.username} (${socket.userId}) disconnected`);
+    }
     console.log('User disconnected:', socket.id);
   });
 });
@@ -475,6 +500,7 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
 
 // Upload file
 app.post('/api/upload', authenticateToken, upload.single('file'), async (req, res) => {
+  let connection;
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -482,6 +508,8 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
 
     const bucketName = 'chat-files';
     const fileName = `${Date.now()}_${req.file.originalname}`;
+    const messageId = uuidv4();
+    const roomId = req.body.room_id || 'general';
 
     await minioClient.putObject(
       bucketName,
@@ -491,11 +519,49 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       { 'Content-Type': req.file.mimetype }
     );
 
-    const fileUrl = `http://minio:9000/${bucketName}/${fileName}`;
-    res.json({ message: 'File uploaded successfully', url: fileUrl, fileName });
+    const fileUrl = `http://0.0.0.0:9000/${bucketName}/${fileName}`;
+    
+    // Save file message to database
+    connection = await oracledb.getConnection(dbConfig);
+    await connection.execute(
+      `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, file_url)
+       VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :file_url)`,
+      {
+        message_id: messageId,
+        room_id: roomId,
+        sender_id: req.user.user_id,
+        content: `Uploaded file: ${req.file.originalname}`,
+        message_type: 'file',
+        file_url: fileUrl
+      }
+    );
+    await connection.commit();
+
+    // Broadcast file message to room
+    const fileMessage = {
+      message_id: messageId,
+      room_id: roomId,
+      sender_id: req.user.user_id,
+      username: req.user.username,
+      content: `Uploaded file: ${req.file.originalname}`,
+      message_type: 'file',
+      file_url: fileUrl,
+      created_at: new Date()
+    };
+    
+    io.to(roomId).emit('new_message', fileMessage);
+
+    res.json({ 
+      message: 'File uploaded successfully', 
+      url: fileUrl, 
+      fileName: req.file.originalname,
+      message_id: messageId
+    });
   } catch (error) {
     console.error('Upload error:', error);
     res.status(500).json({ error: 'File upload failed' });
+  } finally {
+    if (connection) await connection.close();
   }
 });
 
@@ -523,6 +589,39 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error creating room:', error);
     res.status(500).json({ error: 'Failed to create room' });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
+// Get uploaded files
+app.get('/api/files', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    connection = await oracledb.getConnection(dbConfig);
+    const result = await connection.execute(
+      `SELECT m.message_id, m.file_url, m.created_at, u.username, 
+              SUBSTR(m.file_url, INSTR(m.file_url, '/', -1) + 1) as filename
+       FROM messages m 
+       JOIN users u ON m.sender_id = u.user_id 
+       WHERE m.message_type = 'file' AND m.file_url IS NOT NULL
+       ORDER BY m.created_at DESC`
+    );
+
+    const files = result.rows.map(row => ({
+      file_id: row[0],
+      download_url: row[1],
+      upload_date: row[2],
+      uploaded_by: row[3],
+      filename: row[4],
+      file_size: 0, // You might want to store this separately
+      file_type: row[4] ? row[4].split('.').pop() : 'unknown'
+    }));
+
+    res.json(files);
+  } catch (error) {
+    console.error('Error fetching files:', error);
+    res.status(500).json({ error: 'Database error' });
   } finally {
     if (connection) await connection.close();
   }

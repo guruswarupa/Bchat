@@ -1,7 +1,7 @@
-
 'use client';
 
 import { useState, useEffect } from 'react';
+import openSocket from 'socket.io-client';
 
 interface Message {
   message_id: string;
@@ -28,6 +28,7 @@ export default function ChatDashboard() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<User[]>([]);
   const [eventSource, setEventSource] = useState<EventSource | null>(null);
+  const [socket, setSocket] = useState<any>(null);
 
   useEffect(() => {
     if (isLoggedIn) {
@@ -37,7 +38,7 @@ export default function ChatDashboard() {
 
       sse.onmessage = (event) => {
         const data = JSON.parse(event.data);
-        
+
         if (data.type === 'message') {
           setMessages(prev => [...prev, data.message]);
         } else if (data.type === 'userJoined') {
@@ -56,6 +57,36 @@ export default function ChatDashboard() {
 
       return () => {
         sse.close();
+      };
+    }
+  }, [isLoggedIn, currentRoom, username]);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      const newSocket = openSocket('http://localhost:5000');
+      setSocket(newSocket);
+
+      newSocket.emit('join_room', { username: username, room: currentRoom });
+      newSocket.emit('user_join', { user_id: username, username: username });
+
+      newSocket.on('receive_message', (data: any) => {
+        setMessages((prevMessages) => [...prevMessages, data]);
+      });
+
+      newSocket.on('user_join', (user: any) => {
+        setOnlineUsers((prevUsers) => [...prevUsers, user]);
+      });
+
+      newSocket.on('user_leave', (userId: string) => {
+        setOnlineUsers((prevUsers) => prevUsers.filter((user) => user.user_id !== userId));
+      });
+
+      newSocket.on('users_update', (users: User[]) => {
+        setOnlineUsers(users);
+      });
+
+      return () => {
+        newSocket.disconnect();
       };
     }
   }, [isLoggedIn, currentRoom, username]);
@@ -79,23 +110,42 @@ export default function ChatDashboard() {
 
   const sendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (newMessage.trim()) {
-      try {
-        await fetch('http://localhost:5000/api/messages', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            room: currentRoom,
-            message: newMessage,
-            username: username
-          })
-        });
-        setNewMessage('');
-      } catch (error) {
-        console.error('Error sending message:', error);
+    if (!newMessage.trim() || !socket) return;
+
+    socket.emit('send_message', {
+      content: newMessage,
+      room_id: currentRoom,
+      sender_id: username
+    });
+
+    setNewMessage('');
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('room_id', currentRoom);
+
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5000/api/upload', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
+        body: formData
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('File uploaded:', result);
+        e.target.value = ''; // Reset file input
       }
+    } catch (error) {
+      console.error('Upload error:', error);
     }
   };
 
@@ -134,10 +184,10 @@ export default function ChatDashboard() {
           <h1 className="text-xl font-bold">💬 BChat</h1>
           <p className="text-sm text-gray-600">Welcome, {username}</p>
         </div>
-        
+
         <div className="p-4">
           <h3 className="font-semibold mb-2">Rooms</h3>
-          <div 
+          <div
             className={`p-2 rounded cursor-pointer ${currentRoom === 'general' ? 'bg-blue-100' : 'hover:bg-gray-100'}`}
             onClick={() => setCurrentRoom('general')}
           >
@@ -189,18 +239,26 @@ export default function ChatDashboard() {
         </div>
 
         {/* Message Input */}
-        <div className="bg-white border-t p-4">
+        <div className="p-4 bg-white border-t">
           <form onSubmit={sendMessage} className="flex space-x-2">
             <input
               type="text"
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
-              placeholder="Type your message..."
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Type a message..."
+              className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
+            <label className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 cursor-pointer">
+              📎
+              <input
+                type="file"
+                onChange={handleFileUpload}
+                className="hidden"
+              />
+            </label>
             <button
               type="submit"
-              className="bg-blue-600 text-white px-6 py-2 rounded-md hover:bg-blue-700"
+              className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700"
             >
               Send
             </button>

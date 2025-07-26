@@ -30,8 +30,12 @@ export default function FilesPage() {
 
     setUploading(true);
     try {
+      const token = localStorage.getItem('token');
       const response = await fetch('http://localhost:5000/api/upload', {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        },
         body: formData
       });
 
@@ -51,7 +55,12 @@ export default function FilesPage() {
 
   const fetchFiles = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/files');
+      const token = localStorage.getItem('token');
+      const response = await fetch('http://localhost:5000/api/files', {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
       const data = await response.json();
       setFiles(data);
     } catch (error) {
