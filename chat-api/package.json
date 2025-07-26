@@ -1,0 +1,29 @@
+
+{
+  "name": "chat-api",
+  "version": "1.0.0",
+  "description": "Blockchain-based chat application API",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "keywords": ["chat", "blockchain", "websocket"],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.7.2",
+    "cors": "^2.8.5",
+    "oracledb": "^6.0.3",
+    "minio": "^7.1.3",
+    "web3": "^4.2.0",
+    "multer": "^1.4.5-lts.1",
+    "crypto": "^1.0.1",
+    "uuid": "^9.0.1",
+    "bcrypt": "^5.1.1",
+    "jsonwebtoken": "^9.0.2"
+  }
+}

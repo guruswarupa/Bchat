@@ -1,0 +1,49 @@
+services:
+  oracle-db:
+    image: container-registry.oracle.com/database/free:latest
+    ports:
+      - "1521:1521"
+    environment:
+      - ORACLE_PWD=oracle
+  minio:
+    image: minio/minio
+    command: server /data
+    ports:
+      - "9000:9000"
+    environment:
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+
+  chat-api:
+    build: ./chat-api
+    ports:
+      - "5000:5000"
+    depends_on:
+      - oracle-db
+      - minio
+
+  ganache:
+    image: trufflesuite/ganache-cli
+    ports:
+      - "8545:8545"
+    command: ["--host", "0.0.0.0", "--port", "8545", "--accounts", "10", "--deterministic"]
+
+  blockchain-deploy:
+    build: ./blockchain
+    depends_on:
+      - ganache
+    volumes:
+      - ./blockchain:/app
+    environment:
+      - WEB3_PROVIDER=http://ganache:8545
+
+  frontend:
+    build: ./frontend  # Make sure this folder exists with a Dockerfile
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      - chat-api
