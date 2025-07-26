@@ -286,7 +286,15 @@ io.on('connection', (socket) => {
   // Join room
   socket.on('join_room', (roomId) => {
     socket.join(roomId);
-    console.log(`User ${socket.id} joined room ${roomId}`);
+    socket.currentRoom = roomId;
+    console.log(`User ${socket.username || socket.id} joined room ${roomId}`);
+    
+    // Notify others in the room
+    socket.to(roomId).emit('user_joined_room', {
+      user_id: socket.userId,
+      username: socket.username,
+      room_id: roomId
+    });
   });
 
   // Leave room
@@ -299,36 +307,62 @@ io.on('connection', (socket) => {
   socket.on('send_message', async (data) => {
     try {
       const messageId = uuidv4();
+      const timestamp = new Date();
+      
+      // Generate hash and record on blockchain
       const messageData = {
         message_id: messageId,
         room_id: data.room_id,
         sender_id: data.sender_id,
         content: data.content,
         message_type: data.message_type || 'text',
-        created_at: new Date()
+        created_at: timestamp
       };
-
-      // Generate hash and record on blockchain
+      
       const hash = generateMessageHash(messageData);
       const blockchainHash = await recordOnBlockchain(messageId, hash);
 
-      // Save to database
+      // Save to database with correct parameter mapping
       let connection;
       try {
         connection = await oracledb.getConnection(dbConfig);
         await connection.execute(
-          `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, blockchain_hash)
-           VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :blockchain_hash)`,
+          `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, blockchain_hash, created_at)
+           VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :blockchain_hash, :created_at)`,
           {
-            ...messageData,
-            blockchain_hash: blockchainHash
+            message_id: messageId,
+            room_id: data.room_id,
+            sender_id: data.sender_id,
+            content: data.content,
+            message_type: data.message_type || 'text',
+            blockchain_hash: blockchainHash,
+            created_at: timestamp
           }
         );
         await connection.commit();
 
-        // Broadcast message to room
-        const fullMessage = { ...messageData, blockchain_hash: blockchainHash };
+        // Get username for the message
+        const userResult = await connection.execute(
+          'SELECT username FROM users WHERE user_id = :user_id',
+          [data.sender_id]
+        );
+        
+        const username = userResult.rows.length > 0 ? userResult.rows[0][0] : 'Unknown';
+
+        // Broadcast message to room with username
+        const fullMessage = {
+          message_id: messageId,
+          room_id: data.room_id,
+          sender_id: data.sender_id,
+          username: username,
+          content: data.content,
+          message_type: data.message_type || 'text',
+          blockchain_hash: blockchainHash,
+          created_at: timestamp
+        };
+        
         io.to(data.room_id).emit('new_message', fullMessage);
+        console.log(`Message sent to room ${data.room_id} by ${username}`);
 
       } finally {
         if (connection) await connection.close();
@@ -523,16 +557,18 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     
     // Save file message to database
     connection = await oracledb.getConnection(dbConfig);
+    const timestamp = new Date();
     await connection.execute(
-      `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, file_url)
-       VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :file_url)`,
+      `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, file_url, created_at)
+       VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :file_url, :created_at)`,
       {
         message_id: messageId,
         room_id: roomId,
         sender_id: req.user.user_id,
         content: `Uploaded file: ${req.file.originalname}`,
         message_type: 'file',
-        file_url: fileUrl
+        file_url: fileUrl,
+        created_at: timestamp
       }
     );
     await connection.commit();
@@ -546,10 +582,11 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       content: `Uploaded file: ${req.file.originalname}`,
       message_type: 'file',
       file_url: fileUrl,
-      created_at: new Date()
+      created_at: timestamp
     };
     
     io.to(roomId).emit('new_message', fileMessage);
+    console.log(`File message broadcasted to room ${roomId}`);
 
     res.json({ 
       message: 'File uploaded successfully', 
