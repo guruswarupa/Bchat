@@ -9,5 +9,11 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "update-ip": "node get-ip.js",
+    "start-with-ip": "npm run update-ip && cd chat-api && node index.js",
+    "dev": "npm run update-ip && cd frontend && npm run dev"
   }
 }

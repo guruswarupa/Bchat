@@ -3,6 +3,15 @@
 import { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
 
+// Try to import API_BASE_URL, fallback to localhost
+let API_BASE_URL = 'http://localhost:5000';
+try {
+  const config = require('../config.js');
+  API_BASE_URL = config.API_BASE_URL;
+} catch (error) {
+  console.log('Using default localhost configuration');
+}
+
 interface Message {
   message_id: string;
   user_id: string;
@@ -85,7 +94,7 @@ export default function ChatDashboard() {
   );
 
   const getApiBase = () => {
-    return 'http://localhost:5000';
+    return API_BASE_URL;
   };
 
   const fetchRooms = async () => {
