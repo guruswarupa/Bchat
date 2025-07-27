@@ -830,7 +830,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       { 'Content-Type': req.file.mimetype }
     );
 
-    const fileUrl = `http://minio:9000/${bucketName}/${fileName}`;
+    const fileUrl = `http://localhost:9000/${bucketName}/${fileName}`;
     console.log('File uploaded to MinIO:', fileUrl);
 
     let username = req.user.username || 'Unknown';
@@ -1260,7 +1260,7 @@ app.get('/api/files', authenticateToken, async (req, res) => {
           file_type: originalFilename.split('.').pop() || 'unknown',
           uploaded_by: 'User', // MinIO doesn't store this info, could be enhanced
           upload_date: stats.lastModified,
-          download_url: `http://minio:9000/${bucketName}/${obj.name}`
+          download_url: `http://localhost:9000/${bucketName}/${obj.name}`
         });
       } catch (objError) {
         console.error(`Error processing object ${obj.name}:`, objError);
