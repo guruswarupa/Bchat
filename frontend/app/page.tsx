@@ -22,6 +22,16 @@ interface User {
   is_online: boolean;
 }
 
+interface Room {
+  room_id: string;
+  room_name: string;
+  description: string;
+  created_by: string;
+  is_private: boolean;
+  room_type: string;
+  created_at: string;
+}
+
 export default function ChatDashboard() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -39,10 +49,135 @@ export default function ChatDashboard() {
   const [pendingRoom, setPendingRoom] = useState('');
   const [roomPin, setRoomPin] = useState('');
   const [showMobileSidebar, setShowMobileSidebar] = useState(false);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newRoom, setNewRoom] = useState({
+    room_name: '',
+    description: '',
+    is_private: false,
+    room_pin: ''
+  });
+  const [deleteConfirmation, setDeleteConfirmation] = useState({
+    show: false,
+    roomId: '',
+    roomName: ''
+  });
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Professional Delete Icon Component
+  const DeleteIcon = () => (
+    <svg 
+      width="16" 
+      height="16" 
+      viewBox="0 0 24 24" 
+      fill="none" 
+      xmlns="http://www.w3.org/2000/svg"
+      className="w-4 h-4"
+    >
+      <path 
+        d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c0-1 1-2 2-2v2m-6 5v6m4-6v6" 
+        stroke="currentColor" 
+        strokeWidth="2" 
+        strokeLinecap="round" 
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 
   const getApiBase = () => {
     return 'http://localhost:5000';
+  };
+
+  const fetchRooms = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const apiBase = getApiBase();
+
+      const response = await fetch(`${apiBase}/api/rooms`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setRooms(data);
+      }
+    } catch (error) {
+      console.error('Error fetching rooms:', error);
+    }
+  };
+
+  const createRoom = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const token = localStorage.getItem('token');
+      const apiBase = getApiBase();
+
+      const response = await fetch(`${apiBase}/api/rooms`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(newRoom)
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log('Room created:', result);
+        setShowCreateForm(false);
+        setNewRoom({ room_name: '', description: '', is_private: false, room_pin: '' });
+        fetchRooms(); // Refresh rooms list
+      } else {
+        alert('Failed to create room');
+      }
+    } catch (error) {
+      console.error('Error creating room:', error);
+      alert('Failed to create room');
+    }
+  };
+
+  const confirmDeleteRoom = (roomId: string, roomName: string, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent switching to the room when clicking delete
+    setDeleteConfirmation({
+      show: true,
+      roomId,
+      roomName
+    });
+  };
+
+  const deleteRoom = async () => {
+    const { roomId } = deleteConfirmation;
+    
+    try {
+      const token = localStorage.getItem('token');
+      const apiBase = getApiBase();
+
+      const response = await fetch(`${apiBase}/api/rooms/${roomId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        console.log('Room deleted:', roomId);
+        // If we're currently in the deleted room, switch to general
+        if (currentRoom === roomId) {
+          switchRoom('general');
+        }
+        setDeleteConfirmation({ show: false, roomId: '', roomName: '' });
+        fetchRooms(); // Refresh rooms list
+      } else {
+        const error = await response.json();
+        console.error(error.error || 'Failed to delete room');
+        setDeleteConfirmation({ show: false, roomId: '', roomName: '' });
+      }
+    } catch (error) {
+      console.error('Error deleting room:', error);
+      setDeleteConfirmation({ show: false, roomId: '', roomName: '' });
+    }
   };
 
   const fetchMessages = async () => {
@@ -69,26 +204,13 @@ export default function ChatDashboard() {
     // For any room that's not the default public rooms, check if it requires PIN
     const publicRooms = ['general', 'tech', 'random'];
     if (!publicRooms.includes(roomId)) {
-      // Check if room requires PIN
-      try {
-        const token = localStorage.getItem('token');
-        const response = await fetch(`http://localhost:5000/api/rooms/${roomId}/verify-pin`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${token}`
-          },
-          body: JSON.stringify({ pin: '' })
-        });
-
-        if (response.status === 401) {
-          // Room requires PIN
-          setPendingRoom(roomId);
-          setShowPinDialog(true);
-          return;
-        }
-      } catch (error) {
-        console.error('Error checking room:', error);
+      // Find the room to check if it's private
+      const room = rooms.find(r => r.room_id === roomId);
+      if (room && room.is_private) {
+        // Room is private, show PIN dialog
+        setPendingRoom(roomId);
+        setShowPinDialog(true);
+        return;
       }
     }
 
@@ -297,6 +419,16 @@ export default function ChatDashboard() {
         console.log('User stopped typing:', data);
       });
 
+      // Listen for room deletion
+      newSocket.on('room_deleted', (data: any) => {
+        console.log('Room deleted:', data);
+        if (currentRoom === data.room_id) {
+          // Switch to the redirect room (usually 'general')
+          switchRoom(data.redirect_to || 'general');
+        }
+        fetchRooms(); // Refresh rooms list
+      });
+
       setSocket(newSocket);
 
       return () => {
@@ -314,6 +446,7 @@ export default function ChatDashboard() {
       setUsername(storedUsername);
       setCurrentUser({ user_id: storedUserId, username: storedUsername });
       setIsLoggedIn(true);
+      fetchRooms(); // Fetch rooms when logged in
     }
 
     // Check URL parameters for room
@@ -427,8 +560,17 @@ export default function ChatDashboard() {
           ))}
         </div>
         <div>
-          <h3 className="text-sm font-medium mb-2">Rooms</h3>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-sm font-medium">Rooms</h3>
+            <button
+              onClick={() => setShowCreateForm(true)}
+              className="bg-blue-600 text-white px-2 py-1 rounded text-xs hover:bg-blue-700 transition-colors"
+            >
+              +
+            </button>
+          </div>
           <div className="space-y-1">
+            {/* Default Rooms */}
             {['general', 'tech', 'random'].map((room) => (
               <button
                 key={room}
@@ -445,15 +587,179 @@ export default function ChatDashboard() {
                 # {room}
               </button>
             ))}
+            
+            {/* Custom Rooms */}
+            {rooms.map((room) => (
+              <div
+                key={room.room_id}
+                className={`w-full flex items-center justify-between px-2 py-2 rounded text-sm transition-colors ${
+                  currentRoom === room.room_id
+                    ? 'bg-blue-600 text-white'
+                    : 'hover:bg-[#3a3a3c] text-gray-300'
+                }`}
+              >
+                <button
+                  onClick={() => {
+                    switchRoom(room.room_id);
+                    setShowMobileSidebar(false);
+                  }}
+                  title={room.description || `${room.room_name} room`}
+                  className="flex-1 text-left flex items-center justify-between"
+                >
+                  <span># {room.room_name}</span>
+                  {room.is_private && (
+                    <span className="text-xs text-orange-400 mr-2">🔒</span>
+                  )}
+                </button>
+                {room.created_by === currentUser?.user_id && (
+                  <button
+                    onClick={(e) => confirmDeleteRoom(room.room_id, room.room_name, e)}
+                    className="ml-2 p-1 text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded transition-colors"
+                    title="Delete room"
+                  >
+                    <DeleteIcon />
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
-        </div>
-        <div className="text-sm space-y-2">
-          <a href="/rooms" className="block text-blue-400 hover:underline">Manage Rooms</a>
         </div>
       </div>
     </aside>
 
+    {/* PIN Verification Dialog */}
+    {showPinDialog && (
+      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+          <h3 className="text-lg font-semibold mb-4 text-white">Enter Room PIN</h3>
+          <div className="space-y-4">
+            <input
+              type="password"
+              placeholder="Room PIN"
+              value={roomPin}
+              onChange={(e) => setRoomPin(e.target.value)}
+              className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  verifyPin();
+                }
+              }}
+            />
+            <div className="flex space-x-2">
+              <button
+                onClick={verifyPin}
+                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
+              >
+                Enter
+              </button>
+              <button
+                onClick={() => {
+                  setShowPinDialog(false);
+                  setRoomPin('');
+                  setPendingRoom('');
+                }}
+                className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Delete Confirmation Dialog */}
+    {deleteConfirmation.show && (
+      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+          <h3 className="text-lg font-semibold mb-4 text-white">Delete Room</h3>
+          <p className="text-gray-300 mb-6">
+            Are you sure you want to delete the room <span className="font-semibold text-white">#{deleteConfirmation.roomName}</span>? 
+            This action cannot be undone and all messages will be permanently lost.
+          </p>
+          <div className="flex space-x-3">
+            <button
+              onClick={deleteRoom}
+              className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors font-medium"
+            >
+              Delete Room
+            </button>
+            <button
+              onClick={() => setDeleteConfirmation({ show: false, roomId: '', roomName: '' })}
+              className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
     {/* Main Chat Column */}
+    {/* Create Room Form Modal */}
+    {showCreateForm && (
+      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+          <h3 className="text-lg font-semibold mb-4 text-white">Create New Room</h3>
+          <form onSubmit={createRoom} className="space-y-4">
+            <input
+              type="text"
+              placeholder="Room Name"
+              value={newRoom.room_name}
+              onChange={(e) => setNewRoom(prev => ({ ...prev, room_name: e.target.value }))}
+              className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              required
+            />
+            <textarea
+              placeholder="Description (optional)"
+              value={newRoom.description}
+              onChange={(e) => setNewRoom(prev => ({ ...prev, description: e.target.value }))}
+              className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              rows={3}
+            />
+            <div className="flex items-center space-x-2">
+              <input
+                type="checkbox"
+                id="private"
+                checked={newRoom.is_private}
+                onChange={(e) => setNewRoom(prev => ({ ...prev, is_private: e.target.checked }))}
+                className="rounded border-[#48484a] bg-[#3a3a3c] text-blue-600 focus:ring-blue-500"
+              />
+              <label htmlFor="private" className="text-white">Private Room</label>
+            </div>
+            {newRoom.is_private && (
+              <input
+                type="password"
+                placeholder="Room PIN"
+                value={newRoom.room_pin}
+                onChange={(e) => setNewRoom(prev => ({ ...prev, room_pin: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+                required
+              />
+            )}
+            <div className="flex space-x-2">
+              <button
+                type="submit"
+                className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors"
+              >
+                Create
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowCreateForm(false);
+                  setNewRoom({ room_name: '', description: '', is_private: false, room_pin: '' });
+                }}
+                className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
+
     <div className="flex-1 flex flex-col h-screen">
       {/* Mobile Header */}
       <div className="lg:hidden bg-[#2c2c2e] p-4 border-b border-[#3a3a3c] flex justify-between items-center">

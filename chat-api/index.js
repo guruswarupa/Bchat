@@ -1004,6 +1004,118 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
   }
 });
 
+// Delete room
+app.delete('/api/rooms/:roomId', authenticateToken, async (req, res) => {
+  let connection;
+  try {
+    const roomId = req.params.roomId;
+    let roomData = null;
+
+    // Check if room exists and if user is the creator
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          'SELECT created_by FROM chat_rooms WHERE room_id = :room_id',
+          [roomId]
+        );
+
+        if (result.rows.length > 0) {
+          roomData = { created_by: result.rows[0][0] };
+        }
+      } catch (dbError) {
+        console.error('Database delete room failed, falling back to memory:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      if (global.inMemoryRooms && global.inMemoryRooms.has(roomId)) {
+        const room = global.inMemoryRooms.get(roomId);
+        roomData = { created_by: room.created_by };
+      }
+    }
+
+    if (!roomData) {
+      return res.status(404).json({ error: 'Room not found' });
+    }
+
+    // Check if current user is the creator
+    if (roomData.created_by !== req.user.user_id) {
+      return res.status(403).json({ error: 'Only room creator can delete the room' });
+    }
+
+    // Delete from database or memory
+    if (dbAvailable) {
+      try {
+        // Delete messages first (foreign key constraint)
+        await connection.execute(
+          'DELETE FROM messages WHERE room_id = :room_id',
+          [roomId]
+        );
+        
+        // Delete room members
+        await connection.execute(
+          'DELETE FROM room_members WHERE room_id = :room_id',
+          [roomId]
+        );
+        
+        // Delete the room
+        await connection.execute(
+          'DELETE FROM chat_rooms WHERE room_id = :room_id',
+          [roomId]
+        );
+        
+        await connection.commit();
+        console.log('Room deleted from database:', roomId);
+      } catch (dbError) {
+        console.error('Database room deletion failed:', dbError);
+        if (connection) {
+          try {
+            await connection.rollback();
+          } catch (rollbackError) {
+            console.error('Rollback error:', rollbackError);
+          }
+        }
+        return res.status(500).json({ error: 'Failed to delete room from database' });
+      }
+    } else {
+      // Delete from in-memory storage
+      if (global.inMemoryRooms) {
+        global.inMemoryRooms.delete(roomId);
+      }
+      if (inMemoryMessages.has(roomId)) {
+        inMemoryMessages.delete(roomId);
+      }
+      console.log('Room deleted from memory:', roomId);
+    }
+
+    // Remove all users from the room via socket
+    if (roomUsers.has(roomId)) {
+      const usersInRoom = roomUsers.get(roomId);
+      for (const [userId, userInfo] of usersInRoom) {
+        const userConnection = connectedUsers.get(userId);
+        if (userConnection && userConnection.socket_id) {
+          // Find socket and move user to general room
+          io.to(userConnection.socket_id).emit('room_deleted', {
+            room_id: roomId,
+            redirect_to: 'general'
+          });
+        }
+      }
+      roomUsers.delete(roomId);
+    }
+
+    res.json({ success: true, message: 'Room deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting room:', error);
+    res.status(500).json({ error: 'Failed to delete room: ' + error.message });
+  } finally {
+    if (connection) await connection.close();
+  }
+});
+
 // Verify room PIN
 app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) => {
   let connection;
