@@ -11,6 +11,7 @@ const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcrypt');
 const jwt = require('jsonwebtoken');
 const { API_IP } = require('./config');
+const EncryptionManager = require('./encryption');
 
 const app = express();
 const server = http.createServer(app);
@@ -106,6 +107,9 @@ const upload = multer({ storage: multer.memoryStorage() });
 // JWT Secret
 const JWT_SECRET = 'your-jwt-secret-key';
 
+// Initialize encryption manager
+const encryptionManager = new EncryptionManager();
+
 // Create database tables using existing connection
 async function initializeDatabaseTables(connection) {
   // Create users table
@@ -160,7 +164,10 @@ async function initializeDatabaseTables(connection) {
         created_at DATE DEFAULT SYSDATE,
         blockchain_hash VARCHAR2(255),
         is_edited NUMBER(1) DEFAULT 0,
-        edited_at DATE
+        edited_at DATE,
+        encrypted_data CLOB,
+        iv VARCHAR2(255),
+        auth_tag VARCHAR2(255)
       )';
     EXCEPTION
       WHEN OTHERS THEN
@@ -305,6 +312,35 @@ async function recordOnBlockchain(messageId, hash) {
   }
 }
 
+// Check if user is member of a room
+async function isRoomMember(userId, roomId) {
+  let connection;
+  try {
+    if (dbAvailable) {
+      connection = await oracledb.getConnection(dbConfig);
+      
+      // Check if user is a member of the room or if it's a public room
+      const result = await connection.execute(
+        `SELECT COUNT(*) FROM room_members rm 
+         JOIN chat_rooms cr ON rm.room_id = cr.room_id 
+         WHERE rm.room_id = :room_id AND (rm.user_id = :user_id OR cr.is_private = 0)`,
+        { room_id: roomId, user_id: userId }
+      );
+      
+      return result.rows[0][0] > 0;
+    } else {
+      // For in-memory storage, assume all users can access public rooms
+      // In production, you'd implement proper membership tracking
+      return true;
+    }
+  } catch (error) {
+    console.error('Error checking room membership:', error);
+    return false;
+  } finally {
+    if (connection) await connection.close();
+  }
+}
+
 // JWT middleware
 function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
@@ -368,7 +404,7 @@ io.on('connection', (socket) => {
   });
 
   // Join room
-  socket.on('join_room', (roomId) => {
+  socket.on('join_room', async (roomId) => {
     // Leave current room first
     if (socket.currentRoom && socket.currentRoom !== roomId) {
       socket.leave(socket.currentRoom);
@@ -388,6 +424,42 @@ io.on('connection', (socket) => {
             roomUsers.delete(socket.currentRoom);
           }
         }
+      }
+    }
+
+    // Check room membership and auto-join public rooms
+    if (socket.userId && dbAvailable) {
+      let connection;
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        
+        // Check if user is already a member or if room is public
+        const memberCheck = await connection.execute(
+          `SELECT COUNT(*) FROM room_members WHERE room_id = :room_id AND user_id = :user_id`,
+          { room_id: roomId, user_id: socket.userId }
+        );
+        
+        const roomCheck = await connection.execute(
+          `SELECT is_private FROM chat_rooms WHERE room_id = :room_id`,
+          [roomId]
+        );
+        
+        const isMember = memberCheck.rows[0][0] > 0;
+        const isPrivate = roomCheck.rows.length > 0 ? roomCheck.rows[0][0] === 1 : false;
+        
+        // Auto-join public rooms
+        if (!isMember && !isPrivate) {
+          await connection.execute(
+            `INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, 'member')`,
+            { room_id: roomId, user_id: socket.userId }
+          );
+          await connection.commit();
+          console.log(`User ${socket.username} auto-joined public room ${roomId}`);
+        }
+      } catch (error) {
+        console.error('Error handling room membership:', error);
+      } finally {
+        if (connection) await connection.close();
       }
     }
 
@@ -442,37 +514,61 @@ io.on('connection', (socket) => {
       const messageId = uuidv4();
       const timestamp = new Date();
 
-      // Generate hash and record on blockchain
+      console.log('Processing message:', { messageId, roomId: data.room_id, senderId: data.sender_id });
+
+      // Check if user is member of the room
+      if (!await isRoomMember(data.sender_id, data.room_id)) {
+        socket.emit('error', 'Access denied: Not a member of this room');
+        return;
+      }
+
+      // Prepare message data for encryption
       const messageData = {
-        message_id: messageId,
-        room_id: data.room_id,
-        sender_id: data.sender_id,
         content: data.content,
         message_type: data.message_type || 'text',
+        sender_id: data.sender_id,
         created_at: timestamp
       };
 
-      const hash = generateMessageHash(messageData);
+      // Generate hash for blockchain (before encryption)
+      const hash = generateMessageHash({
+        message_id: messageId,
+        room_id: data.room_id,
+        ...messageData
+      });
       const blockchainHash = await recordOnBlockchain(messageId, hash);
 
       let username = 'Unknown';
+      let encryptedContent = null;
+
+      try {
+        // Encrypt message content
+        encryptedContent = encryptionManager.encryptForRoom(messageData, data.room_id);
+      } catch (encryptError) {
+        console.error('Encryption failed, storing unencrypted:', encryptError);
+        // Fallback: store without encryption in development
+        encryptedContent = { encrypted: JSON.stringify(messageData), iv: '', authTag: '' };
+      }
 
       if (dbAvailable) {
-        // Save to database with correct parameter mapping
+        // Save encrypted message to database
         let connection;
         try {
           connection = await oracledb.getConnection(dbConfig);
           await connection.execute(
-            `INSERT INTO messages (message_id, room_id, user_id, content, message_type, blockchain_hash, created_at)
-             VALUES (:message_id, :room_id, :user_id, :content, :message_type, :blockchain_hash, :created_at)`,
+            `INSERT INTO messages (message_id, room_id, user_id, content, message_type, blockchain_hash, created_at, encrypted_data, iv, auth_tag)
+             VALUES (:message_id, :room_id, :user_id, :content, :message_type, :blockchain_hash, :created_at, :encrypted_data, :iv, :auth_tag)`,
             {
               message_id: messageId,
               room_id: data.room_id,
               user_id: data.sender_id,
-              content: data.content,
+              content: data.content, // Store original content for fallback
               message_type: data.message_type || 'text',
               blockchain_hash: blockchainHash,
-              created_at: timestamp
+              created_at: timestamp,
+              encrypted_data: encryptedContent.encrypted,
+              iv: encryptedContent.iv,
+              auth_tag: encryptedContent.authTag
             }
           );
           await connection.commit();
@@ -485,52 +581,59 @@ io.on('connection', (socket) => {
 
           username = userResult.rows.length > 0 ? userResult.rows[0][0] : 'Unknown';
 
+        } catch (dbError) {
+          console.error('Database save failed:', dbError);
+          // Continue with broadcasting even if DB save fails
         } finally {
           if (connection) await connection.close();
         }
       } else {
-        // Use in-memory storage
+        // Use in-memory storage with encryption
         const roomMessages = inMemoryMessages.get(data.room_id) || [];
         
         // Get username from connected users or fallback
         const user = connectedUsers.get(data.sender_id);
-        username = user ? user.username : `User-${data.sender_id.substring(0, 8)}`;
+        username = user ? user.username : socket.username || `User-${data.sender_id.substring(0, 8)}`;
         
         roomMessages.push({
           message_id: messageId,
           room_id: data.room_id,
           sender_id: data.sender_id,
           user_id: data.sender_id,
-          username: username, // Store username in memory
-          content: data.content,
+          username: username,
+          content: data.content, // Store original for in-memory
           message_type: data.message_type || 'text',
           blockchain_hash: blockchainHash,
           timestamp: timestamp.toISOString(),
-          created_at: timestamp.toISOString()
+          created_at: timestamp.toISOString(),
+          encrypted_data: encryptedContent.encrypted,
+          iv: encryptedContent.iv,
+          auth_tag: encryptedContent.authTag
         });
         inMemoryMessages.set(data.room_id, roomMessages);
       }
 
-      // Broadcast message to room with username
+      // Broadcast message to room members
       const fullMessage = {
         message_id: messageId,
         room_id: data.room_id,
         sender_id: data.sender_id,
         user_id: data.sender_id,
         username: username,
-        content: data.content,
+        content: data.content, // Send original content to room members
         message_type: data.message_type || 'text',
         blockchain_hash: blockchainHash,
         timestamp: timestamp.toISOString(),
         created_at: timestamp.toISOString()
       };
 
+      console.log(`Broadcasting message to room ${data.room_id}:`, fullMessage);
       io.to(data.room_id).emit('new_message', fullMessage);
       console.log(`Message sent to room ${data.room_id} by ${username}`);
 
     } catch (error) {
       console.error('Error sending message:', error);
-      socket.emit('error', 'Failed to send message');
+      socket.emit('error', 'Failed to send message: ' + error.message);
     }
   });
 
@@ -743,6 +846,13 @@ app.post('/api/auth/login', async (req, res) => {
 // Get messages for a room
 app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
   try {
+    const roomId = req.params.roomId;
+    
+    // Check if user is member of the room
+    if (!await isRoomMember(req.user.user_id, roomId)) {
+      return res.status(403).json({ error: 'Access denied: Not a member of this room' });
+    }
+
     if (dbAvailable) {
       let connection;
       try {
@@ -754,45 +864,100 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
            WHERE m.room_id = :room_id 
            ORDER BY m.created_at DESC 
            FETCH FIRST 50 ROWS ONLY`,
-          [req.params.roomId]
+          [roomId]
         );
 
-        const messages = result.rows.map(row => ({
-          message_id: row[0],
-          room_id: row[1],
-          sender_id: row[2],
-          user_id: row[2],
-          content: row[3],
-          message_type: row[4],
-          file_url: row[5],
-          reply_to: row[6],
-          timestamp: row[7],
-          created_at: row[7],
-          blockchain_hash: row[8],
-          is_edited: row[9],
-          edited_at: row[10],
-          username: row[11]
-        }));
+        const messages = result.rows.map(row => {
+          try {
+            let content = row[3];
+            
+            // Decrypt message if it has encryption data
+            if (row[11] && row[12] && row[13]) { // encrypted_data, iv, auth_tag
+              const encryptedData = {
+                encrypted: row[11],
+                iv: row[12],
+                authTag: row[13]
+              };
+              const decryptedData = encryptionManager.decryptForRoom(encryptedData, roomId);
+              content = decryptedData.content;
+            }
+
+            return {
+              message_id: row[0],
+              room_id: row[1],
+              sender_id: row[2],
+              user_id: row[2],
+              content: content,
+              message_type: row[4],
+              file_url: row[5],
+              reply_to: row[6],
+              timestamp: row[7],
+              created_at: row[7],
+              blockchain_hash: row[8],
+              is_edited: row[9],
+              edited_at: row[10],
+              username: row[14] // username is now at index 14
+            };
+          } catch (decryptError) {
+            console.error('Error decrypting message:', decryptError);
+            return {
+              message_id: row[0],
+              room_id: row[1],
+              sender_id: row[2],
+              user_id: row[2],
+              content: '[DECRYPTION_ERROR]',
+              message_type: row[4],
+              file_url: row[5],
+              reply_to: row[6],
+              timestamp: row[7],
+              created_at: row[7],
+              blockchain_hash: row[8],
+              is_edited: row[9],
+              edited_at: row[10],
+              username: row[14]
+            };
+          }
+        });
 
         res.json(messages.reverse());
       } finally {
         if (connection) await connection.close();
       }
     } else {
-      // Use in-memory storage
-      const roomMessages = inMemoryMessages.get(req.params.roomId) || [];
+      // Use in-memory storage with decryption
+      const roomMessages = inMemoryMessages.get(roomId) || [];
       
-      // Ensure all messages have usernames, add fallback if missing
-      const messagesWithUsernames = roomMessages.map(msg => {
-        if (!msg.username) {
-          // Try to get username from connected users
-          const user = connectedUsers.get(msg.sender_id || msg.user_id);
-          msg.username = user ? user.username : `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`;
+      const decryptedMessages = roomMessages.map(msg => {
+        try {
+          let content = msg.content;
+          
+          // Decrypt message if it has encryption data
+          if (msg.encrypted_data && msg.iv && msg.auth_tag) {
+            const encryptedData = {
+              encrypted: msg.encrypted_data,
+              iv: msg.iv,
+              authTag: msg.auth_tag
+            };
+            const decryptedData = encryptionManager.decryptForRoom(encryptedData, roomId);
+            content = decryptedData.content;
+          }
+
+          return {
+            ...msg,
+            content: content,
+            username: msg.username || `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`
+          };
+        } catch (decryptError) {
+          console.error('Error decrypting message:', decryptError);
+          return {
+            ...msg,
+            content: '[DECRYPTION_ERROR]',
+            username: msg.username || `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`
+          };
         }
-        return msg;
       });
       
-      res.json(messagesWithUsernames);
+      res.json(decryptedMessages);
     }
   } catch (error) {
     console.error('Error fetching messages:', error);
@@ -808,54 +973,103 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const bucketName = 'chat-files';
-    const fileName = `${Date.now()}_${req.file.originalname}`;
-    const messageId = uuidv4();
     const roomId = req.body.room_id || 'general';
+    
+    // Check if user is member of the room
+    if (!await isRoomMember(req.user.user_id, roomId)) {
+      return res.status(403).json({ error: 'Access denied: Not a member of this room' });
+    }
 
-    console.log('Uploading file to MinIO:', fileName, 'Size:', req.file.size);
+    const bucketName = `chat-files-${roomId}`; // Room-specific bucket
+    const fileName = `${Date.now()}_${crypto.randomBytes(16).toString('hex')}_${req.file.originalname}`;
+    const messageId = uuidv4();
 
-    // Ensure bucket exists
+    console.log('Uploading encrypted file to MinIO:', fileName, 'Size:', req.file.size);
+
+    // Encrypt file content
+    let encryptedFile;
+    try {
+      encryptedFile = encryptionManager.encryptFile(req.file.buffer, roomId);
+    } catch (encryptError) {
+      console.error('File encryption failed:', encryptError);
+      return res.status(500).json({ error: 'File encryption failed: ' + encryptError.message });
+    }
+    
+    // Combine encrypted data with metadata for storage
+    const fileDataForStorage = Buffer.concat([
+      encryptedFile.iv,
+      encryptedFile.authTag,
+      encryptedFile.encrypted
+    ]);
+
+    // Ensure room-specific bucket exists
     const bucketExists = await minioClient.bucketExists(bucketName);
     if (!bucketExists) {
       await minioClient.makeBucket(bucketName, 'us-east-1');
-      console.log('Created MinIO bucket:', bucketName);
+      console.log('Created MinIO bucket for room:', bucketName);
     }
 
-    // Upload file to MinIO
+    // Store encrypted file metadata
+    const fileMetadata = {
+      original_name: req.file.originalname,
+      content_type: req.file.mimetype,
+      size: req.file.size,
+      uploaded_by: req.user.user_id,
+      upload_date: new Date().toISOString()
+    };
+
+    const encryptedMetadata = encryptionManager.encryptForRoom(fileMetadata, roomId);
+
+    // Upload encrypted file to MinIO
     await minioClient.putObject(
       bucketName,
       fileName,
-      req.file.buffer,
-      req.file.size,
-      { 'Content-Type': req.file.mimetype }
+      fileDataForStorage,
+      fileDataForStorage.length,
+      { 
+        'Content-Type': 'application/octet-stream',
+        'X-File-Metadata': JSON.stringify(encryptedMetadata)
+      }
     );
 
-    const fileUrl = `http://${API_IP}:9000/${bucketName}/${fileName}`;
-    console.log('File uploaded to MinIO:', fileUrl);
-
+    // Create internal file URL (will be decrypted on download)
+    const fileUrl = `/api/files/${roomId}/${fileName}`;
+    
     let username = req.user.username || 'Unknown';
     const timestamp = new Date();
 
-    // Save file message to database or memory
+    // Prepare and encrypt file message content
+    const messageContent = {
+      content: `Uploaded file: ${req.file.originalname}`,
+      message_type: 'file',
+      file_url: fileUrl,
+      file_metadata: fileMetadata
+    };
+
+    const encryptedMessageContent = encryptionManager.encryptForRoom(messageContent, roomId);
+
+    // Save encrypted file message to database or memory
     if (dbAvailable) {
       try {
         connection = await oracledb.getConnection(dbConfig);
         await connection.execute(
-          `INSERT INTO messages (message_id, room_id, user_id, content, message_type, file_url, created_at)
-           VALUES (:message_id, :room_id, :user_id, :content, :message_type, :file_url, :created_at)`,
+          `INSERT INTO messages (message_id, room_id, user_id, content, message_type, file_url, created_at, encrypted_data, iv, auth_tag)
+           VALUES (:message_id, :room_id, :user_id, :content, :message_type, :file_url, :created_at, :encrypted_data, :iv, :auth_tag)`,
           {
             message_id: messageId,
             room_id: roomId,
             user_id: req.user.user_id,
-            content: `Uploaded file: ${req.file.originalname}`,
+            content: '[ENCRYPTED_FILE]',
             message_type: 'file',
             file_url: fileUrl,
-            created_at: timestamp
+            created_at: timestamp,
+            encrypted_data: encryptedMessageContent.encrypted,
+            iv: encryptedMessageContent.iv,
+            auth_tag: encryptedMessageContent.authTag
           }
         );
         await connection.commit();
-        console.log('File message saved to database');
+        console.log('Encrypted file message saved to database');
       } finally {
         if (connection) await connection.close();
       }
@@ -868,17 +1082,20 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
         sender_id: req.user.user_id,
         user_id: req.user.user_id,
         username: username,
-        content: `Uploaded file: ${req.file.originalname}`,
+        content: '[ENCRYPTED_FILE]',
         message_type: 'file',
         file_url: fileUrl,
         timestamp: timestamp.toISOString(),
-        created_at: timestamp.toISOString()
+        created_at: timestamp.toISOString(),
+        encrypted_data: encryptedMessageContent.encrypted,
+        iv: encryptedMessageContent.iv,
+        auth_tag: encryptedMessageContent.authTag
       });
       inMemoryMessages.set(roomId, roomMessages);
-      console.log('File message saved to memory');
+      console.log('Encrypted file message saved to memory');
     }
 
-    // Broadcast file message to room
+    // Broadcast file message to room (with decrypted content for display)
     const fileMessage = {
       message_id: messageId,
       room_id: roomId,
@@ -893,10 +1110,10 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     };
 
     io.to(roomId).emit('new_message', fileMessage);
-    console.log(`File message broadcasted to room ${roomId}`);
+    console.log(`Encrypted file message broadcasted to room ${roomId}`);
 
     res.json({ 
-      message: 'File uploaded successfully', 
+      message: 'File uploaded and encrypted successfully', 
       url: fileUrl, 
       fileName: req.file.originalname,
       message_id: messageId
@@ -1176,7 +1393,7 @@ app.delete('/api/rooms/:roomId', authenticateToken, async (req, res) => {
   }
 });
 
-// Verify room PIN
+// Verify room PIN and add user to room
 app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) => {
   let connection;
   try {
@@ -1219,7 +1436,29 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
     }
 
     if (roomData.room_pin === pin) {
-      return res.json({ success: true, message: 'PIN verified' });
+      // Add user to room members if PIN is correct
+      if (dbAvailable && connection) {
+        try {
+          // Check if user is already a member
+          const memberCheck = await connection.execute(
+            'SELECT COUNT(*) FROM room_members WHERE room_id = :room_id AND user_id = :user_id',
+            { room_id: roomId, user_id: req.user.user_id }
+          );
+          
+          if (memberCheck.rows[0][0] === 0) {
+            await connection.execute(
+              'INSERT INTO room_members (room_id, user_id, role) VALUES (:room_id, :user_id, :role)',
+              { room_id: roomId, user_id: req.user.user_id, role: 'member' }
+            );
+            await connection.commit();
+            console.log(`User ${req.user.username} added to private room ${roomId}`);
+          }
+        } catch (memberError) {
+          console.error('Error adding user to room:', memberError);
+        }
+      }
+      
+      return res.json({ success: true, message: 'PIN verified and access granted' });
     } else {
       return res.status(401).json({ error: 'Invalid PIN' });
     }
@@ -1231,51 +1470,178 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
   }
 });
 
-// Get uploaded files
-app.get('/api/files', authenticateToken, async (req, res) => {
+// Download encrypted file
+app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
   try {
-    const bucketName = 'chat-files';
-
-    // Check if bucket exists
-    const bucketExists = await minioClient.bucketExists(bucketName);
-    if (!bucketExists) {
-      return res.json([]);
+    const { roomId, fileName } = req.params;
+    
+    // Check if user is member of the room
+    if (!await isRoomMember(req.user.user_id, roomId)) {
+      return res.status(403).json({ error: 'Access denied: Not a member of this room' });
     }
 
-    // Get list of objects from MinIO
-    const objectsList = [];
-    const objectsStream = minioClient.listObjects(bucketName, '', true);
+    const bucketName = `chat-files-${roomId}`;
 
-    for await (const obj of objectsStream) {
+    // Check if bucket and file exist
+    const bucketExists = await minioClient.bucketExists(bucketName);
+    if (!bucketExists) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Get encrypted file from MinIO
+    const fileStream = await minioClient.getObject(bucketName, fileName);
+    const chunks = [];
+    
+    for await (const chunk of fileStream) {
+      chunks.push(chunk);
+    }
+    
+    const encryptedFileData = Buffer.concat(chunks);
+    
+    // Extract IV, auth tag, and encrypted content
+    const iv = encryptedFileData.slice(0, 16);
+    const authTag = encryptedFileData.slice(16, 32);
+    const encrypted = encryptedFileData.slice(32);
+    
+    // Decrypt file
+    const decryptedFile = encryptionManager.decryptFile({
+      encrypted: encrypted,
+      iv: iv,
+      authTag: authTag
+    }, roomId);
+
+    // Get file metadata
+    const objectStat = await minioClient.statObject(bucketName, fileName);
+    const metadataHeader = objectStat.metaData['x-file-metadata'];
+    
+    let originalName = fileName;
+    let contentType = 'application/octet-stream';
+    
+    if (metadataHeader) {
       try {
-        // Get object stats to get file size
-        const stats = await minioClient.statObject(bucketName, obj.name);
+        const encryptedMetadata = JSON.parse(metadataHeader);
+        const decryptedMetadata = encryptionManager.decryptForRoom(encryptedMetadata, roomId);
+        originalName = decryptedMetadata.original_name;
+        contentType = decryptedMetadata.content_type;
+      } catch (metaError) {
+        console.error('Error decrypting file metadata:', metaError);
+      }
+    }
 
-        // Extract original filename from the prefixed name (remove timestamp prefix)
-        const originalFilename = obj.name.includes('_') ? obj.name.substring(obj.name.indexOf('_') + 1) : obj.name;
+    // Set response headers
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${originalName}"`);
+    res.setHeader('Content-Length', decryptedFile.length);
+    
+    // Send decrypted file
+    res.send(decryptedFile);
+    
+  } catch (error) {
+    console.error('File download error:', error);
+    res.status(500).json({ error: 'Failed to download file: ' + error.message });
+  }
+});
 
-        objectsList.push({
-          file_id: obj.name, // Use object name as file ID
-          filename: originalFilename,
-          file_size: stats.size,
-          file_type: originalFilename.split('.').pop() || 'unknown',
-          uploaded_by: 'User', // MinIO doesn't store this info, could be enhanced
-          upload_date: stats.lastModified,
-          download_url: `http://${API_IP}:9000/${bucketName}/${obj.name}`
-        });
-      } catch (objError) {
-        console.error(`Error processing object ${obj.name}:`, objError);
-        // Continue with other objects even if one fails
+// Get uploaded files for rooms user has access to
+app.get('/api/files', authenticateToken, async (req, res) => {
+  try {
+    const allFiles = [];
+    
+    // Get all rooms the user has access to
+    let userRooms = [];
+    
+    if (dbAvailable) {
+      let connection;
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        const result = await connection.execute(
+          `SELECT DISTINCT rm.room_id, cr.room_name 
+           FROM room_members rm 
+           JOIN chat_rooms cr ON rm.room_id = cr.room_id 
+           WHERE rm.user_id = :user_id
+           UNION
+           SELECT room_id, room_name 
+           FROM chat_rooms 
+           WHERE is_private = 0`,
+          [req.user.user_id]
+        );
+        
+        userRooms = result.rows.map(row => ({
+          room_id: row[0],
+          room_name: row[1]
+        }));
+      } finally {
+        if (connection) await connection.close();
+      }
+    } else {
+      // For in-memory, assume user has access to all rooms (simplified)
+      if (global.inMemoryRooms) {
+        userRooms = Array.from(global.inMemoryRooms.values()).map(room => ({
+          room_id: room.room_id,
+          room_name: room.room_name
+        }));
+      }
+    }
+
+    // Get files from each accessible room
+    for (const room of userRooms) {
+      const bucketName = `chat-files-${room.room_id}`;
+      
+      try {
+        const bucketExists = await minioClient.bucketExists(bucketName);
+        if (!bucketExists) continue;
+
+        const objectsStream = minioClient.listObjects(bucketName, '', true);
+
+        for await (const obj of objectsStream) {
+          try {
+            const stats = await minioClient.statObject(bucketName, obj.name);
+            
+            // Try to decrypt metadata
+            let originalFilename = obj.name;
+            let uploadedBy = 'Unknown';
+            let fileSize = stats.size;
+            
+            const metadataHeader = stats.metaData['x-file-metadata'];
+            if (metadataHeader) {
+              try {
+                const encryptedMetadata = JSON.parse(metadataHeader);
+                const decryptedMetadata = encryptionManager.decryptForRoom(encryptedMetadata, room.room_id);
+                originalFilename = decryptedMetadata.original_name;
+                uploadedBy = decryptedMetadata.uploaded_by;
+                fileSize = decryptedMetadata.size;
+              } catch (metaError) {
+                console.error('Error decrypting file metadata:', metaError);
+              }
+            }
+
+            allFiles.push({
+              file_id: obj.name,
+              filename: originalFilename,
+              file_size: fileSize,
+              file_type: originalFilename.split('.').pop() || 'unknown',
+              uploaded_by: uploadedBy,
+              upload_date: stats.lastModified,
+              room_id: room.room_id,
+              room_name: room.room_name,
+              download_url: `/api/files/${room.room_id}/${obj.name}`
+            });
+          } catch (objError) {
+            console.error(`Error processing object ${obj.name}:`, objError);
+          }
+        }
+      } catch (bucketError) {
+        console.error(`Error accessing bucket ${bucketName}:`, bucketError);
       }
     }
 
     // Sort by upload date (newest first)
-    objectsList.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
+    allFiles.sort((a, b) => new Date(b.upload_date) - new Date(a.upload_date));
 
-    res.json(objectsList);
+    res.json(allFiles);
   } catch (error) {
-    console.error('Error fetching files from MinIO:', error);
-    res.status(500).json({ error: 'MinIO error: ' + error.message });
+    console.error('Error fetching files:', error);
+    res.status(500).json({ error: 'Failed to fetch files: ' + error.message });
   }
 });
 

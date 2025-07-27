@@ -97,6 +97,159 @@ export default function ChatDashboard() {
     return API_BASE_URL;
   };
 
+  const handleFileDownload = async (fileUrl: string, fileName: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}${fileUrl}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = fileName || 'download';
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+      } else {
+        alert('Failed to download file');
+      }
+    } catch (error) {
+      console.error('Download error:', error);
+      alert('Failed to download file');
+    }
+  };
+
+  const getFilePreviewUrl = async (fileUrl: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}${fileUrl}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const blob = await response.blob();
+        return window.URL.createObjectURL(blob);
+      }
+    } catch (error) {
+      console.error('Preview error:', error);
+    }
+    return null;
+  };
+
+  const isImageFile = (fileName: string) => {
+    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'];
+    return imageExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  };
+
+  const isVideoFile = (fileName: string) => {
+    const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.webm', '.flv', '.wmv'];
+    return videoExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  };
+
+  const isAudioFile = (fileName: string) => {
+    const audioExtensions = ['.mp3', '.wav', '.ogg', '.aac', '.flac', '.m4a'];
+    return audioExtensions.some(ext => fileName.toLowerCase().endsWith(ext));
+  };
+
+  // Cache for loaded preview URLs to prevent re-loading
+  const previewCache = useRef(new Map<string, string>());
+
+  const MediaPreview = ({ fileUrl, fileName }: { fileUrl: string; fileName: string }) => {
+    const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+      // Check if we already have this URL cached
+      if (previewCache.current.has(fileUrl)) {
+        setPreviewUrl(previewCache.current.get(fileUrl)!);
+        setLoading(false);
+        return;
+      }
+
+      // Load preview only if not cached
+      const loadPreview = async () => {
+        const url = await getFilePreviewUrl(fileUrl);
+        if (url) {
+          previewCache.current.set(fileUrl, url);
+          setPreviewUrl(url);
+        }
+        setLoading(false);
+      };
+      
+      loadPreview();
+
+      // Cleanup function that only runs on unmount
+      return () => {
+        if (previewUrl && previewCache.current.has(fileUrl)) {
+          window.URL.revokeObjectURL(previewUrl);
+          previewCache.current.delete(fileUrl);
+        }
+      };
+    }, []); // Empty dependency array - only run once per component instance
+
+    if (loading) {
+      return <div className="text-gray-400 text-sm">Loading preview...</div>;
+    }
+
+    if (!previewUrl) {
+      return <div className="text-red-400 text-sm">Failed to load preview</div>;
+    }
+
+    if (isImageFile(fileName) && previewUrl) {
+      return (
+        <div className="mt-2">
+          <img 
+            src={previewUrl} 
+            alt={fileName}
+            className="max-w-full h-auto max-h-96 rounded-lg shadow-lg cursor-pointer"
+            onClick={() => window.open(previewUrl, '_blank')}
+          />
+        </div>
+      );
+    }
+
+    if (isVideoFile(fileName) && previewUrl) {
+      return (
+        <div className="mt-2">
+          <video 
+            controls 
+            className="max-w-full h-auto max-h-96 rounded-lg shadow-lg"
+            preload="metadata"
+          >
+            <source src={previewUrl || undefined} />
+            Your browser does not support the video tag.
+          </video>
+        </div>
+      );
+    }
+
+    if (isAudioFile(fileName) && previewUrl) {
+      return (
+        <div className="mt-2">
+          <audio 
+            controls 
+            className="w-full max-w-md"
+            preload="metadata"
+          >
+            <source src={previewUrl || undefined} />
+            Your browser does not support the audio tag.
+          </audio>
+        </div>
+      );
+    }
+
+    return null;
+  };
+
   const fetchRooms = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -412,11 +565,24 @@ export default function ChatDashboard() {
 
       // Listen for new messages
       newSocket.on('new_message', (message: Message) => {
-        console.log('Received message for room:', message.room_id, 'current room:', currentRoom);
+        console.log('Received message for room:', message.room_id, 'current room:', currentRoom, 'message:', message);
         // Only add message if it's for the current room
         if (message.room_id === currentRoom) {
-          setMessages(prev => [...prev, message]);
+          setMessages(prev => {
+            // Check if message already exists to prevent duplicates
+            const exists = prev.some(m => m.message_id === message.message_id);
+            if (!exists) {
+              return [...prev, message];
+            }
+            return prev;
+          });
         }
+      });
+
+      // Listen for socket errors
+      newSocket.on('error', (error: any) => {
+        console.error('Socket error:', error);
+        alert('Error: ' + error);
       });
 
       // Listen for user updates (room-specific)
@@ -822,17 +988,28 @@ export default function ChatDashboard() {
               {msg.message_type === 'file' && msg.file_url ? (
                 <div>
                   <p className="mb-2">{msg.content}</p>
-                  <a 
-                    href={msg.file_url} 
-                    target="_blank" 
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white text-xs transition-colors"
-                  >
-                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                    </svg>
-                    Download File
-                  </a>
+                  
+                  {/* Media Preview */}
+                  {(() => {
+                    const fileName = msg.content.replace('Uploaded file: ', '');
+                    if (isImageFile(fileName) || isVideoFile(fileName) || isAudioFile(fileName)) {
+                      return <MediaPreview fileUrl={msg.file_url!} fileName={fileName} />;
+                    }
+                    return null;
+                  })()}
+                  
+                  {/* Download Button */}
+                  <div className="mt-2">
+                    <button 
+                      onClick={() => handleFileDownload(msg.file_url!, msg.content.replace('Uploaded file: ', ''))}
+                      className="inline-flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white text-xs transition-colors"
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      Download File
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <p>{msg.content}</p>
