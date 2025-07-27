@@ -579,21 +579,47 @@ app.get('/', (req, res) => {
 app.post('/api/auth/register', async (req, res) => {
   let connection;
   try {
+    console.log('Registration attempt:', { body: req.body });
     const { username, email, password } = req.body;
+    
+    if (!username || !email || !password) {
+      console.log('Missing registration fields');
+      return res.status(400).json({ error: 'Username, email, and password are required' });
+    }
+
     const userId = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 10);
 
     if (dbAvailable) {
       try {
         connection = await oracledb.getConnection(dbConfig);
+        
+        // Check if user already exists
+        const checkResult = await connection.execute(
+          'SELECT COUNT(*) FROM users WHERE username = :username OR email = :email',
+          { username, email }
+        );
+        
+        if (checkResult.rows[0][0] > 0) {
+          return res.status(400).json({ error: 'Username or email already exists' });
+        }
+        
         await connection.execute(
           'INSERT INTO users (user_id, username, email, password_hash) VALUES (:user_id, :username, :email, :password_hash)',
           { user_id: userId, username, email, password_hash: hashedPassword }
         );
         await connection.commit();
+        console.log('User registered in database:', username);
       } catch (dbError) {
         console.error('Database registration failed, falling back to memory:', dbError);
         dbAvailable = false;
+        if (connection) {
+          try {
+            await connection.rollback();
+          } catch (rollbackError) {
+            console.error('Rollback error:', rollbackError);
+          }
+        }
       }
     }
     
@@ -612,9 +638,11 @@ app.post('/api/auth/register', async (req, res) => {
         created_at: new Date().toISOString(),
         is_online: false
       });
+      console.log('User registered in memory:', username);
     }
 
     const token = jwt.sign({ user_id: userId, username }, JWT_SECRET);
+    console.log('Registration successful for user:', username);
     res.status(201).json({ token, user: { user_id: userId, username, email } });
   } catch (error) {
     console.error('Registration error:', error);
@@ -628,7 +656,14 @@ app.post('/api/auth/register', async (req, res) => {
 app.post('/api/auth/login', async (req, res) => {
   let connection;
   try {
+    console.log('Login attempt:', { body: req.body });
     const { username, password } = req.body;
+    
+    if (!username || !password) {
+      console.log('Missing credentials');
+      return res.status(400).json({ error: 'Username and password are required' });
+    }
+
     let user = null;
 
     if (dbAvailable) {
@@ -646,6 +681,7 @@ app.post('/api/auth/login', async (req, res) => {
             email: result.rows[0][2],
             password_hash: result.rows[0][3]
           };
+          console.log('User found in database:', username);
         }
       } catch (dbError) {
         console.error('Database login failed, falling back to memory:', dbError);
@@ -656,18 +692,24 @@ app.post('/api/auth/login', async (req, res) => {
     if (!dbAvailable) {
       // Use in-memory storage
       user = Array.from(inMemoryUsers.values()).find(u => u.username === username);
+      if (user) {
+        console.log('User found in memory:', username);
+      }
     }
 
     if (!user) {
+      console.log('User not found:', username);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const validPassword = await bcrypt.compare(password, user.password_hash);
     if (!validPassword) {
+      console.log('Invalid password for user:', username);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     const token = jwt.sign({ user_id: user.user_id, username: user.username }, JWT_SECRET);
+    console.log('Login successful for user:', username);
     res.json({ token, user: { user_id: user.user_id, username: user.username, email: user.email } });
   } catch (error) {
     console.error('Login error:', error);
