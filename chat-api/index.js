@@ -248,6 +248,26 @@ async function initializeMinIO() {
       await minioClient.makeBucket(bucketName, 'us-east-1');
       console.log('MinIO bucket created successfully');
     }
+
+    // Set bucket policy for public read access
+    const policy = {
+      Version: '2012-10-17',
+      Statement: [
+        {
+          Effect: 'Allow',
+          Principal: { AWS: ['*'] },
+          Action: ['s3:GetObject'],
+          Resource: [`arn:aws:s3:::${bucketName}/*`]
+        }
+      ]
+    };
+
+    try {
+      await minioClient.setBucketPolicy(bucketName, JSON.stringify(policy));
+      console.log('MinIO bucket policy set for public read access');
+    } catch (policyError) {
+      console.error('Failed to set bucket policy:', policyError);
+    }
   } catch (error) {
     console.error('MinIO initialization error:', error);
   }
@@ -792,6 +812,16 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     const messageId = uuidv4();
     const roomId = req.body.room_id || 'general';
 
+    console.log('Uploading file to MinIO:', fileName, 'Size:', req.file.size);
+
+    // Ensure bucket exists
+    const bucketExists = await minioClient.bucketExists(bucketName);
+    if (!bucketExists) {
+      await minioClient.makeBucket(bucketName, 'us-east-1');
+      console.log('Created MinIO bucket:', bucketName);
+    }
+
+    // Upload file to MinIO
     await minioClient.putObject(
       bucketName,
       fileName,
@@ -800,36 +830,65 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       { 'Content-Type': req.file.mimetype }
     );
 
-    const fileUrl = `http://0.0.0.0:9000/${bucketName}/${fileName}`;
+    const fileUrl = `http://minio:9000/${bucketName}/${fileName}`;
+    console.log('File uploaded to MinIO:', fileUrl);
 
-    // Save file message to database
-    connection = await oracledb.getConnection(dbConfig);
+    let username = req.user.username || 'Unknown';
     const timestamp = new Date();
-    await connection.execute(
-      `INSERT INTO messages (message_id, room_id, sender_id, content, message_type, file_url, created_at)
-       VALUES (:message_id, :room_id, :sender_id, :content, :message_type, :file_url, :created_at)`,
-      {
+
+    // Save file message to database or memory
+    if (dbAvailable) {
+      try {
+        connection = await oracledb.getConnection(dbConfig);
+        await connection.execute(
+          `INSERT INTO messages (message_id, room_id, user_id, content, message_type, file_url, created_at)
+           VALUES (:message_id, :room_id, :user_id, :content, :message_type, :file_url, :created_at)`,
+          {
+            message_id: messageId,
+            room_id: roomId,
+            user_id: req.user.user_id,
+            content: `Uploaded file: ${req.file.originalname}`,
+            message_type: 'file',
+            file_url: fileUrl,
+            created_at: timestamp
+          }
+        );
+        await connection.commit();
+        console.log('File message saved to database');
+      } finally {
+        if (connection) await connection.close();
+      }
+    } else {
+      // Use in-memory storage
+      const roomMessages = inMemoryMessages.get(roomId) || [];
+      roomMessages.push({
         message_id: messageId,
         room_id: roomId,
         sender_id: req.user.user_id,
+        user_id: req.user.user_id,
+        username: username,
         content: `Uploaded file: ${req.file.originalname}`,
         message_type: 'file',
         file_url: fileUrl,
-        created_at: timestamp
-      }
-    );
-    await connection.commit();
+        timestamp: timestamp.toISOString(),
+        created_at: timestamp.toISOString()
+      });
+      inMemoryMessages.set(roomId, roomMessages);
+      console.log('File message saved to memory');
+    }
 
     // Broadcast file message to room
     const fileMessage = {
       message_id: messageId,
       room_id: roomId,
       sender_id: req.user.user_id,
-      username: req.user.username,
+      user_id: req.user.user_id,
+      username: username,
       content: `Uploaded file: ${req.file.originalname}`,
       message_type: 'file',
       file_url: fileUrl,
-      created_at: timestamp
+      timestamp: timestamp.toISOString(),
+      created_at: timestamp.toISOString()
     };
 
     io.to(roomId).emit('new_message', fileMessage);
@@ -843,7 +902,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     });
   } catch (error) {
     console.error('Upload error:', error);
-    res.status(500).json({ error: 'File upload failed' });
+    res.status(500).json({ error: 'File upload failed: ' + error.message });
   } finally {
     if (connection) await connection.close();
   }
@@ -1201,7 +1260,7 @@ app.get('/api/files', authenticateToken, async (req, res) => {
           file_type: originalFilename.split('.').pop() || 'unknown',
           uploaded_by: 'User', // MinIO doesn't store this info, could be enhanced
           upload_date: stats.lastModified,
-          download_url: `http://0.0.0.0:9000/${bucketName}/${obj.name}`
+          download_url: `http://minio:9000/${bucketName}/${obj.name}`
         });
       } catch (objError) {
         console.error(`Error processing object ${obj.name}:`, objError);

@@ -325,6 +325,9 @@ export default function ChatDashboard() {
     const file = e.target.files?.[0];
     if (!file) return;
 
+    // Show upload progress (optional)
+    console.log('Uploading file:', file.name);
+
     const formData = new FormData();
     formData.append('file', file);
     formData.append('room_id', currentRoom);
@@ -343,11 +346,19 @@ export default function ChatDashboard() {
 
       if (response.ok) {
         const result = await response.json();
-        console.log('File uploaded:', result);
-        e.target.value = ''; // Reset file input
+        console.log('File uploaded successfully:', result);
+        // The file message will be automatically broadcasted via socket
+      } else {
+        const error = await response.json();
+        console.error('Upload failed:', error);
+        alert('Failed to upload file: ' + (error.error || 'Unknown error'));
       }
+      
+      // Reset file input
+      e.target.value = '';
     } catch (error) {
       console.error('Upload error:', error);
+      alert('Failed to upload file. Please try again.');
     }
   };
 
@@ -794,8 +805,30 @@ export default function ChatDashboard() {
               {msg.blockchain_hash && (
                 <span className="ml-2 text-green-400 text-xs">🔗 Verified</span>
               )}
+              {msg.message_type === 'file' && (
+                <span className="ml-2 text-blue-400 text-xs">📎 File</span>
+              )}
             </div>
-            <p className="text-white text-sm break-words">{msg.content}</p>
+            <div className="text-white text-sm break-words">
+              {msg.message_type === 'file' && msg.file_url ? (
+                <div>
+                  <p className="mb-2">{msg.content}</p>
+                  <a 
+                    href={msg.file_url} 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-700 rounded-md text-white text-xs transition-colors"
+                  >
+                    <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Download File
+                  </a>
+                </div>
+              ) : (
+                <p>{msg.content}</p>
+              )}
+            </div>
           </div>
         ))}
         <div ref={messagesEndRef} />
@@ -806,9 +839,17 @@ export default function ChatDashboard() {
         <form onSubmit={sendMessage} className="flex items-center gap-3">
           
           {/* Attach Icon */}
-          <label className="cursor-pointer text-gray-300 hover:text-white text-xl">
-            📎
-            <input type="file" onChange={handleFileUpload} className="hidden" />
+          <label className="cursor-pointer text-gray-300 hover:text-white transition-colors p-2 rounded-md hover:bg-[#48484a]" title="Attach file">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M21.44 11.05l-9.19 9.19c-1.78 1.78-4.61 1.78-6.39 0s-1.78-4.61 0-6.39l9.19-9.19c1.17-1.17 3.07-1.17 4.24 0s1.17 3.07 0 4.24L11.05 17.1c-.59.59-1.54.59-2.12 0s-.59-1.54 0-2.12L16.76 7.05" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            <input 
+              type="file" 
+              onChange={handleFileUpload} 
+              className="hidden"
+              accept="*/*"
+              title="Select file to upload"
+            />
           </label>
 
           {/* Textarea */}
