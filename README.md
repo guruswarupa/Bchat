@@ -96,75 +96,24 @@ Before running the application, ensure you have:
 
 1. **Clone and navigate to the project**:
    ```bash
-   git clone <repository-url>
-   cd blockchain-chat
+   git clone https://github.com/guruswarupa/Bchat
+   cd Bchat
+   npm i
+   cd blockchain
+   npm i
+   cd ..
+   cd chat-api
+   npm i
+   cd ..
+   cd frontend
+   npm i
    ```
 
 2. **Start all services**:
    ```bash
    docker-compose up -d
    ```
-
-3. **Deploy the smart contract**:
-   ```bash
-   cd blockchain
-   npm install
-   npm run deploy
-   cd ..
-   ```
-
-4. **Access the application**:
-   - Frontend: http://localhost:3000
-   - API: http://localhost:5000
-   - MinIO Console: http://localhost:9000
-
-### Method 2: Manual Setup (Development)
-
-1. **Start infrastructure services**:
-   ```bash
-   docker-compose up oracle-db minio ganache -d
-   ```
-
-2. **Setup and run the backend**:
-   ```bash
-   cd chat-api
-   npm install
-   npm start
-   ```
-
-3. **Setup and run the frontend** (in a new terminal):
-   ```bash
-   cd frontend
-   npm install
-   npm run dev
-   ```
-
-4. **Deploy smart contract** (in a new terminal):
-   ```bash
-   cd blockchain
-   npm install
-   npm run deploy
-   ```
-
-### Method 3: Run on Replit
-
-1. **Fork this Repl**
-2. **Configure the run button** by setting up a workflow:
-   ```bash
-   docker-compose up -d
-   sleep 10
-   cd blockchain && npm install && npm run deploy && cd ..
-   node chat-api/index.js
-   ```
-3. **Click the Run button**
-4. **Access the frontend** through the Replit web view
-
-## 🔧 Configuration
-
-### Environment Variables
-
-The application uses the following default configurations:
-
+   
 #### Backend API (chat-api/index.js)
 ```javascript
 // Database Configuration
