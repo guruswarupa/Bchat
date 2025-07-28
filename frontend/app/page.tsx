@@ -800,24 +800,6 @@ export default function ChatDashboard() {
             </button>
           </div>
           <div className="space-y-1">
-            {/* Default Rooms */}
-            {['general', 'tech', 'random'].map((room) => (
-              <button
-                key={room}
-                onClick={() => {
-                  switchRoom(room);
-                  setShowMobileSidebar(false);
-                }}
-                className={`w-full text-left px-2 py-2 rounded text-sm transition-colors ${
-                  currentRoom === room
-                    ? 'bg-blue-600 text-white'
-                    : 'hover:bg-[#3a3a3c] text-gray-300'
-                }`}
-              >
-                # {room}
-              </button>
-            ))}
-            
             {/* Custom Rooms */}
             {rooms.map((room) => (
               <div

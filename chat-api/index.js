@@ -177,14 +177,17 @@ async function initializeDatabaseTables(client) {
   await client.query(createMessages);
   await client.query(createRoomMembers);
 
-  // Insert default general room
-  const insertGeneralRoom = `
-    INSERT INTO chat_rooms (room_id, room_name, description, room_type)
-    VALUES ('general', 'General Chat', 'Main chat room for everyone', 'public')
+  // Insert default rooms
+  const insertDefaultRooms = `
+    INSERT INTO chat_rooms (room_id, room_name, description, room_type, is_private, created_by)
+    VALUES 
+      ('general', 'General Chat', 'Main chat room for everyone', 'public', FALSE, 'system'),
+      ('tech', 'Tech Talk', 'Discuss technology, programming, and development', 'public', FALSE, 'system'),
+      ('random', 'Random', 'Off-topic discussions and casual chat', 'public', FALSE, 'system')
     ON CONFLICT (room_id) DO NOTHING
   `;
 
-  await client.query(insertGeneralRoom);
+  await client.query(insertDefaultRooms);
   console.log('Database tables created successfully');
 }
 
@@ -213,16 +216,42 @@ async function initializeDatabase(retryCount = 0, maxRetries = 10) {
       // Initialize in-memory storage
       if (!global.inMemoryRooms) {
         global.inMemoryRooms = new Map();
-        // Add default general room
-        global.inMemoryRooms.set('general', {
-          room_id: 'general',
-          room_name: 'General Chat',
-          description: 'Main chat room for everyone',
-          created_by: 'system',
-          is_private: false,
-          room_type: 'public',
-          room_pin: null,
-          created_at: new Date().toISOString()
+        // Add default rooms
+        const defaultRooms = [
+          {
+            room_id: 'general',
+            room_name: 'General Chat',
+            description: 'Main chat room for everyone',
+            created_by: 'system',
+            is_private: false,
+            room_type: 'public',
+            room_pin: null,
+            created_at: new Date().toISOString()
+          },
+          {
+            room_id: 'tech',
+            room_name: 'Tech Talk',
+            description: 'Discuss technology, programming, and development',
+            created_by: 'system',
+            is_private: false,
+            room_type: 'public',
+            room_pin: null,
+            created_at: new Date().toISOString()
+          },
+          {
+            room_id: 'random',
+            room_name: 'Random',
+            description: 'Off-topic discussions and casual chat',
+            created_by: 'system',
+            is_private: false,
+            room_type: 'public',
+            room_pin: null,
+            created_at: new Date().toISOString()
+          }
+        ];
+        
+        defaultRooms.forEach(room => {
+          global.inMemoryRooms.set(room.room_id, room);
         });
       }
       return false;
@@ -705,6 +734,77 @@ app.get('/api/health', async (req, res) => {
     },
     storage_mode: dbAvailable ? 'database' : 'in-memory'
   });
+});
+
+// Cleanup duplicate rooms (admin endpoint)
+app.post('/api/admin/cleanup-rooms', async (req, res) => {
+  try {
+    if (dbAvailable) {
+      const client = await pool.connect();
+      
+      // Find and remove duplicate general rooms, keeping only the first one
+      const duplicates = await client.query(`
+        WITH duplicates AS (
+          SELECT room_id, room_name, ROW_NUMBER() OVER (PARTITION BY LOWER(room_name) ORDER BY created_at) as rn
+          FROM chat_rooms
+          WHERE LOWER(room_name) IN ('general', 'general chat')
+        )
+        SELECT room_id, room_name FROM duplicates WHERE rn > 1
+      `);
+      
+      let cleanedCount = 0;
+      for (const duplicate of duplicates.rows) {
+        // Delete messages first
+        await client.query('DELETE FROM messages WHERE room_id = $1', [duplicate.room_id]);
+        // Delete room members
+        await client.query('DELETE FROM room_members WHERE room_id = $1', [duplicate.room_id]);
+        // Delete the room
+        await client.query('DELETE FROM chat_rooms WHERE room_id = $1', [duplicate.room_id]);
+        cleanedCount++;
+        console.log(`Cleaned up duplicate room: ${duplicate.room_name} (${duplicate.room_id})`);
+      }
+      
+      client.release();
+      res.json({ 
+        success: true, 
+        message: `Cleaned up ${cleanedCount} duplicate rooms`,
+        cleaned_rooms: duplicates.rows
+      });
+    } else {
+      // Clean up in-memory duplicates
+      if (global.inMemoryRooms) {
+        const roomNames = new Set();
+        const toDelete = [];
+        
+        for (const [roomId, room] of global.inMemoryRooms.entries()) {
+          const lowerName = room.room_name.toLowerCase();
+          if (roomNames.has(lowerName)) {
+            toDelete.push(roomId);
+          } else {
+            roomNames.add(lowerName);
+          }
+        }
+        
+        toDelete.forEach(roomId => {
+          global.inMemoryRooms.delete(roomId);
+          if (inMemoryMessages.has(roomId)) {
+            inMemoryMessages.delete(roomId);
+          }
+        });
+        
+        res.json({ 
+          success: true, 
+          message: `Cleaned up ${toDelete.length} duplicate rooms from memory`,
+          cleaned_rooms: toDelete
+        });
+      } else {
+        res.json({ success: true, message: 'No rooms to clean up' });
+      }
+    }
+  } catch (error) {
+    console.error('Error cleaning up rooms:', error);
+    res.status(500).json({ error: 'Failed to cleanup rooms: ' + error.message });
+  }
 });
 
 // User registration
@@ -1191,8 +1291,46 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
     const { room_name, description, is_private, room_pin } = req.body;
-    const roomId = uuidv4();
+    
+    if (!room_name || room_name.trim() === '') {
+      return res.status(400).json({ error: 'Room name is required' });
+    }
 
+    // Check if room with same name already exists
+    let roomExists = false;
+    
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        const existingRoom = await client.query(
+          'SELECT room_id FROM chat_rooms WHERE LOWER(room_name) = LOWER($1)',
+          [room_name.trim()]
+        );
+        roomExists = existingRoom.rows.length > 0;
+        client.release();
+      } catch (dbError) {
+        console.error('Database check failed:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Check in-memory storage
+      if (global.inMemoryRooms) {
+        for (const room of global.inMemoryRooms.values()) {
+          if (room.room_name.toLowerCase() === room_name.trim().toLowerCase()) {
+            roomExists = true;
+            break;
+          }
+        }
+      }
+    }
+
+    if (roomExists) {
+      return res.status(400).json({ error: 'A room with this name already exists' });
+    }
+
+    const roomId = uuidv4();
     console.log('Creating room:', { room_name, is_private, room_pin: room_pin ? '[HIDDEN]' : 'none' });
 
     // Ensure database is initialized before trying to create room
@@ -1206,7 +1344,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7)`,
           [
             roomId, 
-            room_name, 
+            room_name.trim(), 
             description || '', 
             req.user.user_id, 
             Boolean(is_private), 
@@ -1233,7 +1371,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
       // Use in-memory storage
       const roomData = {
         room_id: roomId,
-        room_name,
+        room_name: room_name.trim(),
         description: description || '',
         created_by: req.user.user_id,
         is_private: Boolean(is_private),
@@ -1252,7 +1390,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
     
     res.status(201).json({ 
       room_id: roomId, 
-      room_name, 
+      room_name: room_name.trim(), 
       description: description || '', 
       created_by: req.user.user_id,
       is_private: Boolean(is_private),
