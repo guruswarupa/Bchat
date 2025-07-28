@@ -1,12 +1,17 @@
 services:
-  oracle-db:
-    image: container-registry.oracle.com/database/free:latest
+  postgres-db:
+    image: postgres:15-alpine
     ports:
-      - "1521:1521"
+      - "5432:5432"
     environment:
-      - ORACLE_PWD=oracle
+      POSTGRES_DB: chatdb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   minio:
-    image: minio/minio
+    image: minio/minioch
     command: server /data
     ports:
       - "9000:9000"
@@ -18,8 +23,10 @@ services:
     build: ./chat-api
     ports:
       - "5000:5000"
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres-db:5432/chatdb
     depends_on:
-      - oracle-db
+      - postgres-db
       - minio
 
   ganache:
@@ -47,3 +54,6 @@ services:
       - /app/.next
     depends_on:
       - chat-api
+
+volumes:
+  postgres_data:
