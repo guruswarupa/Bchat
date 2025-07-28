@@ -137,7 +137,7 @@ async function initializeDatabaseTables(client) {
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       is_private BOOLEAN DEFAULT FALSE,
       room_type VARCHAR(20) DEFAULT 'public',
-      room_pin VARCHAR(50)
+      room_pin VARCHAR(100)
     )
   `;
 
@@ -1333,6 +1333,12 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
     const roomId = uuidv4();
     console.log('Creating room:', { room_name, is_private, room_pin: room_pin ? '[HIDDEN]' : 'none' });
 
+    // Hash the PIN if provided for private rooms
+    let hashedPin = null;
+    if (is_private && room_pin) {
+      hashedPin = await bcrypt.hash(room_pin, 10);
+    }
+
     // Ensure database is initialized before trying to create room
     if (dbAvailable) {
       try {
@@ -1349,7 +1355,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
             req.user.user_id, 
             Boolean(is_private), 
             is_private ? 'private' : 'public',
-            is_private && room_pin ? room_pin : null
+            hashedPin
           ]
         );
 
@@ -1376,7 +1382,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
         created_by: req.user.user_id,
         is_private: Boolean(is_private),
         room_type: is_private ? 'private' : 'public',
-        room_pin: is_private && room_pin ? room_pin : null,
+        room_pin: hashedPin,
         created_at: new Date().toISOString()
       };
       
@@ -1555,7 +1561,10 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
       return res.json({ success: true, message: 'Room is public' });
     }
 
-    if (roomData.room_pin === pin) {
+    // Verify PIN using bcrypt
+    const pinIsValid = roomData.room_pin && await bcrypt.compare(pin, roomData.room_pin);
+    
+    if (pinIsValid) {
       // Add user to room members if PIN is correct
       if (dbAvailable) {
         try {
