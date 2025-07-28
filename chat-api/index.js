@@ -1770,6 +1770,281 @@ app.get('/api/files', authenticateToken, async (req, res) => {
   }
 });
 
+// Get user profile
+app.get('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    let user = null;
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        const result = await client.query(
+          'SELECT user_id, username, email, avatar_url, created_at FROM users WHERE user_id = $1',
+          [req.user.user_id]
+        );
+
+        if (result.rows.length > 0) {
+          user = result.rows[0];
+        }
+        client.release();
+      } catch (dbError) {
+        console.error('Database profile fetch failed:', dbError);
+        dbAvailable = false;
+      }
+    }
+    
+    if (!dbAvailable) {
+      // Use in-memory storage
+      user = inMemoryUsers.get(req.user.user_id);
+      if (user) {
+        user = {
+          user_id: user.user_id,
+          username: user.username,
+          email: user.email,
+          avatar_url: user.avatar_url || null,
+          created_at: user.created_at
+        };
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching profile:', error);
+    res.status(500).json({ error: 'Failed to fetch profile: ' + error.message });
+  }
+});
+
+// Update user profile
+app.put('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const { username, email } = req.body;
+    
+    if (!username || !email) {
+      return res.status(400).json({ error: 'Username and email are required' });
+    }
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        // Check if username/email is taken by another user
+        const checkResult = await client.query(
+          'SELECT COUNT(*) FROM users WHERE (username = $1 OR email = $2) AND user_id != $3',
+          [username, email, req.user.user_id]
+        );
+        
+        if (parseInt(checkResult.rows[0].count) > 0) {
+          client.release();
+          return res.status(400).json({ error: 'Username or email already taken' });
+        }
+        
+        const result = await client.query(
+          'UPDATE users SET username = $1, email = $2 WHERE user_id = $3 RETURNING user_id, username, email, avatar_url, created_at',
+          [username, email, req.user.user_id]
+        );
+
+        client.release();
+        
+        if (result.rows.length > 0) {
+          res.json(result.rows[0]);
+        } else {
+          res.status(404).json({ error: 'User not found' });
+        }
+      } catch (dbError) {
+        console.error('Database profile update failed:', dbError);
+        res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      const user = inMemoryUsers.get(req.user.user_id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Check if username/email is taken
+      const conflict = Array.from(inMemoryUsers.values()).find(u => 
+        u.user_id !== req.user.user_id && (u.username === username || u.email === email)
+      );
+      
+      if (conflict) {
+        return res.status(400).json({ error: 'Username or email already taken' });
+      }
+      
+      user.username = username;
+      user.email = email;
+      inMemoryUsers.set(req.user.user_id, user);
+      
+      res.json({
+        user_id: user.user_id,
+        username: user.username,
+        email: user.email,
+        avatar_url: user.avatar_url || null,
+        created_at: user.created_at
+      });
+    }
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ error: 'Failed to update profile: ' + error.message });
+  }
+});
+
+// Upload profile picture
+app.post('/api/profile/avatar', authenticateToken, upload.single('avatar'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    // Validate file type (images only)
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+    if (!allowedTypes.includes(req.file.mimetype)) {
+      return res.status(400).json({ error: 'Only image files are allowed (JPEG, PNG, GIF, WebP)' });
+    }
+
+    // Validate file size (max 5MB)
+    const maxSize = 5 * 1024 * 1024; // 5MB
+    if (req.file.size > maxSize) {
+      return res.status(400).json({ error: 'File size must be less than 5MB' });
+    }
+
+    const bucketName = 'user-avatars';
+    const fileName = `${req.user.user_id}_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.${req.file.mimetype.split('/')[1]}`;
+
+    console.log('Uploading avatar:', fileName, 'Size:', req.file.size);
+
+    // Ensure avatars bucket exists
+    const bucketExists = await minioClient.bucketExists(bucketName);
+    if (!bucketExists) {
+      await minioClient.makeBucket(bucketName, 'us-east-1');
+      
+      // Set public read policy for avatars
+      const policy = {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Effect: 'Allow',
+            Principal: { AWS: ['*'] },
+            Action: ['s3:GetObject'],
+            Resource: [`arn:aws:s3:::${bucketName}/*`]
+          }
+        ]
+      };
+
+      try {
+        await minioClient.setBucketPolicy(bucketName, JSON.stringify(policy));
+        console.log('Avatar bucket policy set for public read access');
+      } catch (policyError) {
+        console.error('Failed to set bucket policy:', policyError);
+      }
+    }
+
+    // Upload avatar to MinIO
+    await minioClient.putObject(
+      bucketName,
+      fileName,
+      req.file.buffer,
+      req.file.size,
+      { 'Content-Type': req.file.mimetype }
+    );
+
+    // Create avatar URL
+    const avatarUrl = `/api/avatars/${fileName}`;
+    
+    // Update user's avatar URL in database or memory
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        const result = await client.query(
+          'UPDATE users SET avatar_url = $1 WHERE user_id = $2 RETURNING user_id, username, email, avatar_url, created_at',
+          [avatarUrl, req.user.user_id]
+        );
+        client.release();
+        
+        if (result.rows.length > 0) {
+          res.json({ 
+            message: 'Avatar uploaded successfully', 
+            avatar_url: avatarUrl,
+            user: result.rows[0]
+          });
+        } else {
+          res.status(404).json({ error: 'User not found' });
+        }
+      } catch (dbError) {
+        console.error('Database avatar update failed:', dbError);
+        res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      const user = inMemoryUsers.get(req.user.user_id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      user.avatar_url = avatarUrl;
+      inMemoryUsers.set(req.user.user_id, user);
+      
+      res.json({ 
+        message: 'Avatar uploaded successfully', 
+        avatar_url: avatarUrl,
+        user: {
+          user_id: user.user_id,
+          username: user.username,
+          email: user.email,
+          avatar_url: user.avatar_url,
+          created_at: user.created_at
+        }
+      });
+    }
+  } catch (error) {
+    console.error('Avatar upload error:', error);
+    res.status(500).json({ error: 'Avatar upload failed: ' + error.message });
+  }
+});
+
+// Serve avatar images
+app.get('/api/avatars/:fileName', async (req, res) => {
+  try {
+    const { fileName } = req.params;
+    const bucketName = 'user-avatars';
+
+    // Check if bucket and file exist
+    const bucketExists = await minioClient.bucketExists(bucketName);
+    if (!bucketExists) {
+      return res.status(404).json({ error: 'Avatar not found' });
+    }
+
+    // Get avatar from MinIO
+    const fileStream = await minioClient.getObject(bucketName, fileName);
+    const chunks = [];
+    
+    for await (const chunk of fileStream) {
+      chunks.push(chunk);
+    }
+    
+    const fileData = Buffer.concat(chunks);
+
+    // Get file metadata for content type
+    const objectStat = await minioClient.statObject(bucketName, fileName);
+    const contentType = objectStat.metaData['content-type'] || 'image/jpeg';
+
+    // Set response headers
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+    res.setHeader('Content-Length', fileData.length);
+    
+    // Send avatar
+    res.send(fileData);
+    
+  } catch (error) {
+    console.error('Avatar download error:', error);
+    res.status(404).json({ error: 'Avatar not found' });
+  }
+});
+
 // Verify message on blockchain
 app.get('/api/verify/:messageId', authenticateToken, async (req, res) => {
   try {

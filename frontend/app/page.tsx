@@ -29,6 +29,15 @@ interface User {
   user_id: string;
   username: string;
   is_online: boolean;
+  avatar_url?: string;
+}
+
+interface UserProfile {
+  user_id: string;
+  username: string;
+  email: string;
+  avatar_url?: string;
+  created_at: string;
 }
 
 interface Room {
@@ -72,6 +81,15 @@ export default function ChatDashboard() {
     roomName: ''
   });
   const [isLoading, setIsLoading] = useState(true);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [profileForm, setProfileForm] = useState({
+    username: '',
+    email: ''
+  });
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -96,6 +114,124 @@ export default function ChatDashboard() {
 
   const getApiBase = () => {
     return API_BASE_URL;
+  };
+
+  // Fetch user profile
+  const fetchUserProfile = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/profile`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const profile = await response.json();
+        setUserProfile(profile);
+        setProfileForm({
+          username: profile.username,
+          email: profile.email
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching profile:', error);
+    }
+  };
+
+  // Update user profile
+  const updateProfile = async () => {
+    try {
+      setProfileLoading(true);
+      const token = localStorage.getItem('token');
+      
+      // Update profile info
+      const response = await fetch(`${getApiBase()}/api/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(profileForm)
+      });
+
+      if (response.ok) {
+        const updatedProfile = await response.json();
+        
+        // Upload avatar if selected
+        if (avatarFile) {
+          const formData = new FormData();
+          formData.append('avatar', avatarFile);
+          
+          const avatarResponse = await fetch(`${getApiBase()}/api/profile/avatar`, {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${token}`
+            },
+            body: formData
+          });
+
+          if (avatarResponse.ok) {
+            const avatarResult = await avatarResponse.json();
+            updatedProfile.avatar_url = avatarResult.avatar_url;
+          }
+        }
+
+        setUserProfile(updatedProfile);
+        setCurrentUser(updatedProfile);
+        localStorage.setItem('username', updatedProfile.username);
+        setUsername(updatedProfile.username);
+        setShowProfileModal(false);
+        setAvatarFile(null);
+        setAvatarPreview(null);
+        alert('Profile updated successfully!');
+      } else {
+        const error = await response.json();
+        alert('Failed to update profile: ' + error.error);
+      }
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      alert('Failed to update profile');
+    } finally {
+      setProfileLoading(false);
+    }
+  };
+
+  // Handle avatar file selection
+  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      // Validate file type
+      const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
+      if (!allowedTypes.includes(file.type)) {
+        alert('Please select an image file (JPEG, PNG, GIF, WebP)');
+        return;
+      }
+
+      // Validate file size (5MB)
+      const maxSize = 5 * 1024 * 1024;
+      if (file.size > maxSize) {
+        alert('File size must be less than 5MB');
+        return;
+      }
+
+      setAvatarFile(file);
+      
+      // Create preview
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        setAvatarPreview(e.target?.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Get avatar URL with fallback
+  const getAvatarUrl = (avatarUrl?: string) => {
+    if (avatarUrl) {
+      return `${getApiBase()}${avatarUrl}`;
+    }
+    return null;
   };
 
   const handleFileDownload = async (fileUrl: string, fileName: string) => {
@@ -453,6 +589,8 @@ export default function ChatDashboard() {
         setUsername(data.user.username);
         setCurrentUser(data.user);
         setIsLoggedIn(true);
+        // Fetch full profile after login
+        setTimeout(() => fetchUserProfile(), 100);
       } else {
         alert(isRegistering ? 'Registration failed' : 'Login failed');
       }
@@ -657,6 +795,7 @@ export default function ChatDashboard() {
           setCurrentUser({ user_id: storedUserId, username: storedUsername });
           setIsLoggedIn(true);
           await fetchRooms(); // Fetch rooms when logged in
+          await fetchUserProfile(); // Fetch user profile
         }
 
         // Check URL parameters for room
@@ -781,11 +920,22 @@ export default function ChatDashboard() {
         <div className="lg:hidden">
           <h3 className="text-md font-medium mb-4">Online Users ({onlineUsers.length})</h3>
         </div>
-        <div className="space-y-2 max-h-48 overflow-y-auto">
+        <div className="space-y-2 max-h-80 overflow-y-auto .hide-scrollbar">
           {onlineUsers.map((user) => (
-            <div key={user.user_id} className="flex items-center space-x-2">
-              <span className="w-2 h-2 bg-green-400 rounded-full flex-shrink-0" />
-              <span className="text-sm text-white truncate">{user.username}</span>
+            <div key={user.user_id} className="flex items-center space-x-3">
+              <div className="relative flex-shrink-0">
+                <div className="w-8 h-8 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                  {user.avatar_url ? (
+                    <img src={getAvatarUrl(user.avatar_url) || ''} alt={user.username} className="w-full h-full object-cover" />
+                  ) : (
+                    <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                      <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                    </svg>
+                  )}
+                </div>
+                <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-400 rounded-full border-2 border-[#2c2c2e]" />
+              </div>
+              <span className="text-sm text-white truncate flex-1">{user.username}</span>
             </div>
           ))}
         </div>
@@ -980,6 +1130,22 @@ export default function ChatDashboard() {
           <p className="text-xs text-gray-400">Welcome, {username}!</p>
         </div>
         <div className="flex items-center space-x-2">
+          {/* Mobile Profile Avatar Button */}
+          <button
+            onClick={() => setShowProfileModal(true)}
+            className="flex items-center space-x-1 bg-[#48484a] hover:bg-[#5c5c5e] px-2 py-2 rounded-md transition-colors"
+          >
+            <div className="w-6 h-6 rounded-full overflow-hidden bg-[#3a3a3c] flex items-center justify-center">
+              {userProfile?.avatar_url ? (
+                <img src={getAvatarUrl(userProfile.avatar_url) || ''} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+              )}
+            </div>
+          </button>
+          
           <button
             onClick={handleLogout}
             className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-md text-sm flex items-center space-x-1"
@@ -998,21 +1164,125 @@ export default function ChatDashboard() {
         </div>
       </div>
 
+      {/* Profile Modal */}
+      {showProfileModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4 text-white">Profile Settings</h3>
+            <div className="space-y-4">
+              {/* Avatar Section */}
+              <div className="flex flex-col items-center space-y-3">
+                <div className="relative">
+                  <div className="w-20 h-20 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                    {avatarPreview ? (
+                      <img src={avatarPreview} alt="Avatar Preview" className="w-full h-full object-cover" />
+                    ) : userProfile?.avatar_url ? (
+                      <img src={getAvatarUrl(userProfile.avatar_url) || ''} alt="Current Avatar" className="w-full h-full object-cover" />
+                    ) : (
+                      <svg className="w-10 h-10 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                      </svg>
+                    )}
+                  </div>
+                  <label className="absolute bottom-0 right-0 bg-blue-600 hover:bg-blue-700 text-white rounded-full p-1 cursor-pointer">
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                    </svg>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handleAvatarChange}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-gray-400">Click + to change avatar (max 5MB)</p>
+              </div>
+
+              {/* Form Fields */}
+              <input
+                type="text"
+                placeholder="Username"
+                value={profileForm.username}
+                onChange={(e) => setProfileForm(prev => ({ ...prev, username: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              <input
+                type="email"
+                placeholder="Email"
+                value={profileForm.email}
+                onChange={(e) => setProfileForm(prev => ({ ...prev, email: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              
+              {userProfile && (
+                <div className="text-xs text-gray-400">
+                  Member since: {new Date(userProfile.created_at).toLocaleDateString()}
+                </div>
+              )}
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={updateProfile}
+                  disabled={profileLoading}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {profileLoading ? 'Saving...' : 'Save Changes'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowProfileModal(false);
+                    setAvatarFile(null);
+                    setAvatarPreview(null);
+                    setProfileForm({
+                      username: userProfile?.username || '',
+                      email: userProfile?.email || ''
+                    });
+                  }}
+                  className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Desktop Header */}
       <div className="hidden lg:flex bg-[#2c2c2e] p-4 border-b border-[#3a3a3c] justify-between items-center">
         <div>
           <h1 className="text-lg font-bold">#{currentRoom}</h1>
           <p className="text-xs text-gray-400">Welcome, {username}!</p>
         </div>
-        <button
-          onClick={handleLogout}
-          className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors flex items-center space-x-2 text-sm"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-          </svg>
-          <span>Logout</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          {/* Profile Avatar Button */}
+          <button
+            onClick={() => setShowProfileModal(true)}
+            className="flex items-center space-x-2 bg-[#48484a] hover:bg-[#5c5c5e] px-3 py-2 rounded-md transition-colors"
+          >
+            <div className="w-8 h-8 rounded-full overflow-hidden bg-[#3a3a3c] flex items-center justify-center">
+              {userProfile?.avatar_url ? (
+                <img src={getAvatarUrl(userProfile.avatar_url) || ''} alt="Profile" className="w-full h-full object-cover" />
+              ) : (
+                <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+              )}
+            </div>
+            <span className="text-sm text-white">{username}</span>
+          </button>
+          
+          <button
+            onClick={handleLogout}
+            className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors flex items-center space-x-2 text-sm"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Logout</span>
+          </button>
+        </div>
       </div>
 
       {/* Messages Area */}
@@ -1023,6 +1293,12 @@ export default function ChatDashboard() {
         {messages.map((msg) => (
           <div key={msg.message_id} className="bg-[#3a3a3c] p-3 rounded-xl shadow">
             <div className="flex items-center text-sm text-gray-300 mb-1">
+              <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center mr-2 flex-shrink-0">
+                {/* For now, show default avatar - you could extend this to show user avatars if available */}
+                <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                </svg>
+              </div>
               <span className="font-semibold text-white mr-2">{msg.username}</span>
               <span className="text-xs">{new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}</span>
               {msg.blockchain_hash && (
