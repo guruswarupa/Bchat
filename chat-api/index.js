@@ -147,7 +147,6 @@ async function initializeDatabaseTables(client) {
       message_id VARCHAR(50) PRIMARY KEY,
       room_id VARCHAR(50),
       user_id VARCHAR(50),
-      content TEXT,
       message_type VARCHAR(20) DEFAULT 'text',
       file_url VARCHAR(500),
       reply_to VARCHAR(50),
@@ -562,13 +561,12 @@ io.on('connection', (socket) => {
         try {
           const client = await pool.connect();
           await client.query(
-            `INSERT INTO messages (message_id, room_id, user_id, content, message_type, blockchain_hash, created_at, encrypted_data, iv, auth_tag)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+            `INSERT INTO messages (message_id, room_id, user_id, message_type, blockchain_hash, created_at, encrypted_data, iv, auth_tag)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
             [
               messageId,
               data.room_id,
               data.sender_id,
-              data.content, // Store original content for fallback
               data.message_type || 'text',
               blockchainHash,
               timestamp,
@@ -605,7 +603,6 @@ io.on('connection', (socket) => {
           sender_id: data.sender_id,
           user_id: data.sender_id,
           username: username,
-          content: data.content, // Store original for in-memory
           message_type: data.message_type || 'text',
           blockchain_hash: blockchainHash,
           timestamp: timestamp.toISOString(),
@@ -971,9 +968,9 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
 
         const messages = result.rows.map(row => {
           try {
-            let content = row.content;
+            let content = '[ENCRYPTED]';
             
-            // Decrypt message if it has encryption data
+            // Decrypt message - all messages should be encrypted
             if (row.encrypted_data && row.iv && row.auth_tag) {
               const encryptedData = {
                 encrypted: row.encrypted_data,
@@ -1033,9 +1030,9 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
       
       const decryptedMessages = roomMessages.map(msg => {
         try {
-          let content = msg.content;
+          let content = '[ENCRYPTED]';
           
-          // Decrypt message if it has encryption data
+          // Decrypt message - all messages should be encrypted
           if (msg.encrypted_data && msg.iv && msg.auth_tag) {
             const encryptedData = {
               encrypted: msg.encrypted_data,
@@ -1157,13 +1154,12 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       try {
         const client = await pool.connect();
         await client.query(
-          `INSERT INTO messages (message_id, room_id, user_id, content, message_type, file_url, created_at, encrypted_data, iv, auth_tag)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+          `INSERT INTO messages (message_id, room_id, user_id, message_type, file_url, created_at, encrypted_data, iv, auth_tag)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [
             messageId,
             roomId,
             req.user.user_id,
-            '[ENCRYPTED_FILE]',
             'file',
             fileUrl,
             timestamp,
@@ -1186,7 +1182,6 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
         sender_id: req.user.user_id,
         user_id: req.user.user_id,
         username: username,
-        content: '[ENCRYPTED_FILE]',
         message_type: 'file',
         file_url: fileUrl,
         timestamp: timestamp.toISOString(),
