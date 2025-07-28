@@ -268,9 +268,6 @@ export default function ChatDashboard() {
       return;
     }
 
-    const confirmed = confirm('Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently lost.');
-    if (!confirmed) return;
-
     try {
       setDeleteLoading(true);
       const token = localStorage.getItem('token');
@@ -356,11 +353,11 @@ export default function ChatDashboard() {
         window.URL.revokeObjectURL(url);
         document.body.removeChild(a);
       } else {
-        alert('Failed to download file');
+        toast.error('Failed to download file');
       }
     } catch (error) {
       console.error('Download error:', error);
-      alert('Failed to download file');
+      toast.error('Failed to download file');
     }
   };
 
@@ -654,11 +651,11 @@ export default function ChatDashboard() {
         setRoomPin('');
         setPendingRoom('');
       } else {
-        alert('Invalid PIN');
+        toast.error('Invalid PIN');
       }
     } catch (error) {
       console.error('Error verifying PIN:', error);
-      alert('Error verifying PIN');
+      toast.error('Error verifying PIN');
     }
   };
 
@@ -692,11 +689,11 @@ export default function ChatDashboard() {
         // Fetch full profile after login
         setTimeout(() => fetchUserProfile(), 100);
       } else {
-        alert(isRegistering ? 'Registration failed' : 'Login failed');
+        toast.error(isRegistering ? 'Registration failed' : 'Login failed');
       }
     } catch (error) {
       console.error('Auth error:', error);
-      alert(isRegistering ? 'Registration failed' : 'Login failed');
+      toast.error(isRegistering ? 'Registration failed' : 'Login failed');
     }
   };
 
@@ -773,14 +770,14 @@ export default function ChatDashboard() {
       } else {
         const error = await response.json();
         console.error('Upload failed:', error);
-        alert('Failed to upload file: ' + (error.error || 'Unknown error'));
+        toast.error('Failed to upload file: ' + (error.error || 'Unknown error'));
       }
       
       // Reset file input
       e.target.value = '';
     } catch (error) {
       console.error('Upload error:', error);
-      alert('Failed to upload file. Please try again.');
+      toast.error('Failed to upload file. Please try again.');
     }
   };
 
@@ -842,7 +839,7 @@ export default function ChatDashboard() {
       // Listen for socket errors
       newSocket.on('error', (error: any) => {
         console.error('Socket error:', error);
-        alert('Error: ' + error);
+        toast.error('Error: ' + error);
       });
 
       // Listen for user updates (room-specific)
@@ -877,7 +874,7 @@ export default function ChatDashboard() {
 
       // Listen for account deletion
       newSocket.on('account_deleted', () => {
-        alert('Your account has been deleted. You will be logged out.');
+        toast.success('Your account has been deleted. You will be logged out.');
         handleLogout();
       });
 
@@ -946,10 +943,14 @@ export default function ChatDashboard() {
 
   if (!isLoggedIn) {
     return (
-      <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-white">
+      <div className="min-h-screen bg-[#1e1e1e] flex flex-col items-center justify-center text-white px-4">
         <div className="bg-[#2c2c2e] p-8 rounded-xl shadow-xl w-full max-w-md">
           <h1 className="text-2xl font-semibold mb-6 text-center">
-            {isRegistering ? 'Register to Chat' : 'Login to Chat'}
+            {isRegistering ? (
+              <>Register to <span className="font-semibold text-blue-500">B</span>lockchain<span className="font-semibold text-blue-500">Chat</span>!</>
+            ) : (
+              <>Login to <span className="font-semibold text-blue-500">B</span>lockchain<span className="font-semibold text-blue-500">Chat</span>!</>
+            )}
           </h1>
           <form onSubmit={handleLogin} className="space-y-4">
             {isRegistering && (
@@ -992,6 +993,11 @@ export default function ChatDashboard() {
               {isRegistering ? 'Already have an account? Login' : 'Need an account? Register'}
             </button>
           </form>
+        </div>
+
+        {/* Footer Text */}
+        <div className="mt-6 text-center text-sm text-gray-400">
+          Developed by Guru Swarupa
         </div>
       </div>
     );
