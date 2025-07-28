@@ -71,6 +71,7 @@ export default function ChatDashboard() {
     roomId: '',
     roomName: ''
   });
+  const [isLoading, setIsLoading] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -461,6 +462,27 @@ export default function ChatDashboard() {
     }
   };
 
+  const handleLogout = () => {
+    // Clear local storage
+    localStorage.removeItem('token');
+    localStorage.removeItem('user_id');
+    localStorage.removeItem('username');
+    
+    // Disconnect socket
+    if (socket) {
+      socket.disconnect();
+      setSocket(null);
+    }
+    
+    // Reset state
+    setIsLoggedIn(false);
+    setCurrentUser(null);
+    setUsername('');
+    setMessages([]);
+    setOnlineUsers([]);
+    setCurrentRoom('general');
+  };
+
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (newMessage.trim() && socket && socket.connected) {
@@ -624,23 +646,33 @@ export default function ChatDashboard() {
   }, [isLoggedIn, currentRoom, username]);
 
   useEffect(() => {
-    const token = localStorage.getItem('token');
-    const storedUsername = localStorage.getItem('username');
-    const storedUserId = localStorage.getItem('user_id');
-    
-    if (token && storedUsername) {
-      setUsername(storedUsername);
-      setCurrentUser({ user_id: storedUserId, username: storedUsername });
-      setIsLoggedIn(true);
-      fetchRooms(); // Fetch rooms when logged in
-    }
+    const checkAuthStatus = async () => {
+      try {
+        const token = localStorage.getItem('token');
+        const storedUsername = localStorage.getItem('username');
+        const storedUserId = localStorage.getItem('user_id');
+        
+        if (token && storedUsername) {
+          setUsername(storedUsername);
+          setCurrentUser({ user_id: storedUserId, username: storedUsername });
+          setIsLoggedIn(true);
+          await fetchRooms(); // Fetch rooms when logged in
+        }
 
-    // Check URL parameters for room
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomParam = urlParams.get('room');
-    if (roomParam) {
-      setCurrentRoom(roomParam);
-    }
+        // Check URL parameters for room
+        const urlParams = new URLSearchParams(window.location.search);
+        const roomParam = urlParams.get('room');
+        if (roomParam) {
+          setCurrentRoom(roomParam);
+        }
+      } catch (error) {
+        console.error('Auth check error:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    checkAuthStatus();
   }, []);
 
   // Update URL when room changes
@@ -654,6 +686,18 @@ export default function ChatDashboard() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Loading screen
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-[#1e1e1e] flex items-center justify-center text-white">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-500 mx-auto mb-4"></div>
+          <p className="text-gray-400">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!isLoggedIn) {
     return (
@@ -953,18 +997,40 @@ export default function ChatDashboard() {
           <h1 className="text-lg font-bold">#{currentRoom}</h1>
           <p className="text-xs text-gray-400">Welcome, {username}!</p>
         </div>
-        <button 
-          onClick={() => setShowMobileSidebar(!showMobileSidebar)}
-          className="bg-[#48484a] hover:bg-[#5c5c5e] px-3 py-2 rounded-md"
-        >
-          ☰
-        </button>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={handleLogout}
+            className="bg-red-600 hover:bg-red-700 text-white px-3 py-2 rounded-md text-sm flex items-center space-x-1"
+          >
+            <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+            <span>Logout</span>
+          </button>
+          <button 
+            onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+            className="bg-[#48484a] hover:bg-[#5c5c5e] px-3 py-2 rounded-md"
+          >
+            ☰
+          </button>
+        </div>
       </div>
 
       {/* Desktop Header */}
-      <div className="hidden lg:block bg-[#2c2c2e] p-4 border-b border-[#3a3a3c]">
-        <h1 className="text-lg font-bold">#{currentRoom}</h1>
-        <p className="text-xs text-gray-400">Welcome, {username}!</p>
+      <div className="hidden lg:flex bg-[#2c2c2e] p-4 border-b border-[#3a3a3c] justify-between items-center">
+        <div>
+          <h1 className="text-lg font-bold">#{currentRoom}</h1>
+          <p className="text-xs text-gray-400">Welcome, {username}!</p>
+        </div>
+        <button
+          onClick={handleLogout}
+          className="bg-red-600 hover:bg-red-700 text-white py-2 px-4 rounded-md transition-colors flex items-center space-x-2 text-sm"
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+          </svg>
+          <span>Logout</span>
+        </button>
       </div>
 
       {/* Messages Area */}
