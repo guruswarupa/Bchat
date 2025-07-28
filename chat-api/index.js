@@ -2045,6 +2045,209 @@ app.get('/api/avatars/:fileName', async (req, res) => {
   }
 });
 
+// Change password
+app.put('/api/profile/password', authenticateToken, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
+    }
+
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+    }
+
+    let user = null;
+    
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        const result = await client.query(
+          'SELECT password_hash FROM users WHERE user_id = $1',
+          [req.user.user_id]
+        );
+
+        if (result.rows.length === 0) {
+          client.release();
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        user = result.rows[0];
+        
+        // Verify current password
+        const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+        if (!validPassword) {
+          client.release();
+          return res.status(401).json({ error: 'Current password is incorrect' });
+        }
+
+        // Hash new password and update
+        const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+        await client.query(
+          'UPDATE users SET password_hash = $1 WHERE user_id = $2',
+          [hashedNewPassword, req.user.user_id]
+        );
+
+        client.release();
+        res.json({ message: 'Password updated successfully' });
+      } catch (dbError) {
+        console.error('Database password update failed:', dbError);
+        res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      user = inMemoryUsers.get(req.user.user_id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Verify current password
+      const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
+      if (!validPassword) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+
+      // Hash new password and update
+      const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+      user.password_hash = hashedNewPassword;
+      inMemoryUsers.set(req.user.user_id, user);
+      
+      res.json({ message: 'Password updated successfully' });
+    }
+  } catch (error) {
+    console.error('Error changing password:', error);
+    res.status(500).json({ error: 'Failed to change password: ' + error.message });
+  }
+});
+
+// Delete account
+app.delete('/api/profile', authenticateToken, async (req, res) => {
+  try {
+    const { password } = req.body;
+    
+    if (!password) {
+      return res.status(400).json({ error: 'Password is required to delete account' });
+    }
+
+    let user = null;
+    
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        // Get user and verify password
+        const userResult = await client.query(
+          'SELECT password_hash FROM users WHERE user_id = $1',
+          [req.user.user_id]
+        );
+
+        if (userResult.rows.length === 0) {
+          client.release();
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        user = userResult.rows[0];
+        
+        // Verify password
+        const validPassword = await bcrypt.compare(password, user.password_hash);
+        if (!validPassword) {
+          client.release();
+          return res.status(401).json({ error: 'Password is incorrect' });
+        }
+
+        // Delete user's messages first (foreign key constraint)
+        await client.query(
+          'DELETE FROM messages WHERE user_id = $1',
+          [req.user.user_id]
+        );
+        
+        // Delete user's room memberships
+        await client.query(
+          'DELETE FROM room_members WHERE user_id = $1',
+          [req.user.user_id]
+        );
+        
+        // Delete rooms created by user (cascade will handle messages and memberships)
+        await client.query(
+          'DELETE FROM chat_rooms WHERE created_by = $1',
+          [req.user.user_id]
+        );
+        
+        // Finally delete the user
+        await client.query(
+          'DELETE FROM users WHERE user_id = $1',
+          [req.user.user_id]
+        );
+
+        client.release();
+        console.log('User account deleted from database:', req.user.user_id);
+      } catch (dbError) {
+        console.error('Database account deletion failed:', dbError);
+        return res.status(500).json({ error: 'Database error during deletion' });
+      }
+    } else {
+      // Use in-memory storage
+      user = inMemoryUsers.get(req.user.user_id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Verify password
+      const validPassword = await bcrypt.compare(password, user.password_hash);
+      if (!validPassword) {
+        return res.status(401).json({ error: 'Password is incorrect' });
+      }
+
+      // Delete from in-memory storage
+      inMemoryUsers.delete(req.user.user_id);
+      
+      // Delete user's messages
+      for (const [roomId, messages] of inMemoryMessages.entries()) {
+        const filteredMessages = messages.filter(msg => msg.user_id !== req.user.user_id);
+        inMemoryMessages.set(roomId, filteredMessages);
+      }
+      
+      // Delete rooms created by user
+      if (global.inMemoryRooms) {
+        for (const [roomId, room] of global.inMemoryRooms.entries()) {
+          if (room.created_by === req.user.user_id) {
+            global.inMemoryRooms.delete(roomId);
+            inMemoryMessages.delete(roomId);
+          }
+        }
+      }
+      
+      console.log('User account deleted from memory:', req.user.user_id);
+    }
+
+    // Disconnect user's socket connections
+    if (connectedUsers.has(req.user.user_id)) {
+      const userConnection = connectedUsers.get(req.user.user_id);
+      if (userConnection.socket_id) {
+        io.to(userConnection.socket_id).emit('account_deleted');
+      }
+      connectedUsers.delete(req.user.user_id);
+    }
+
+    // Remove from all room user lists
+    for (const [roomId, roomUsersList] of roomUsers.entries()) {
+      if (roomUsersList.has(req.user.user_id)) {
+        roomUsersList.delete(req.user.user_id);
+        io.to(roomId).emit('users_update', Array.from(roomUsersList.values()));
+      }
+    }
+
+    // TODO: Clean up user's avatar and uploaded files from MinIO
+    // This would require tracking which files belong to which user
+
+    res.json({ message: 'Account deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting account:', error);
+    res.status(500).json({ error: 'Failed to delete account: ' + error.message });
+  }
+});
+
 // Verify message on blockchain
 app.get('/api/verify/:messageId', authenticateToken, async (req, res) => {
   try {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import io from 'socket.io-client';
+import { toast, Toaster } from 'sonner';
 
 // Try to import API_BASE_URL, fallback to localhost
 let API_BASE_URL = 'http://localhost:5000';
@@ -9,7 +10,7 @@ try {
   const config = require('../config.js');
   API_BASE_URL = config.API_BASE_URL;
 } catch (error) {
-  console.log('Using default localhost configuration');
+  // Using default localhost configuration
 }
 
 interface Message {
@@ -90,6 +91,16 @@ export default function ChatDashboard() {
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: ''
+  });
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [passwordLoading, setPasswordLoading] = useState(false);
+  const [deleteLoading, setDeleteLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -135,8 +146,19 @@ export default function ChatDashboard() {
         });
       }
     } catch (error) {
-      console.error('Error fetching profile:', error);
+      toast.error('Error fetching profile');
     }
+  };
+
+  // Reset profile form
+  const resetProfile = () => {
+    setProfileForm({
+      username: userProfile?.username || '',
+      email: userProfile?.email || ''
+    });
+    setAvatarFile(null);
+    setAvatarPreview(null);
+    toast.info('Profile form reset');
   };
 
   // Update user profile
@@ -184,16 +206,95 @@ export default function ChatDashboard() {
         setShowProfileModal(false);
         setAvatarFile(null);
         setAvatarPreview(null);
-        alert('Profile updated successfully!');
+        toast.success('Profile updated successfully!');
       } else {
         const error = await response.json();
-        alert('Failed to update profile: ' + error.error);
+        toast.error('Failed to update profile: ' + error.error);
       }
     } catch (error) {
-      console.error('Error updating profile:', error);
-      alert('Failed to update profile');
+      toast.error('Failed to update profile');
     } finally {
       setProfileLoading(false);
+    }
+  };
+
+  // Change password
+  const changePassword = async () => {
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast.error('New passwords do not match');
+      return;
+    }
+
+    if (passwordForm.newPassword.length < 6) {
+      toast.error('New password must be at least 6 characters long');
+      return;
+    }
+
+    try {
+      setPasswordLoading(true);
+      const token = localStorage.getItem('token');
+      
+      const response = await fetch(`${getApiBase()}/api/profile/password`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          currentPassword: passwordForm.currentPassword,
+          newPassword: passwordForm.newPassword
+        })
+      });
+
+      if (response.ok) {
+        toast.success('Password changed successfully!');
+        setShowPasswordChange(false);
+        setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+      } else {
+        const error = await response.json();
+        toast.error('Failed to change password: ' + error.error);
+      }
+    } catch (error) {
+      toast.error('Failed to change password');
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  // Delete account
+  const deleteAccount = async () => {
+    if (!deletePassword) {
+      toast.error('Please enter your password to confirm account deletion');
+      return;
+    }
+
+    const confirmed = confirm('Are you sure you want to delete your account? This action cannot be undone and all your data will be permanently lost.');
+    if (!confirmed) return;
+
+    try {
+      setDeleteLoading(true);
+      const token = localStorage.getItem('token');
+      
+      const response = await fetch(`${getApiBase()}/api/profile`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ password: deletePassword })
+      });
+
+      if (response.ok) {
+        toast.success('Account deleted successfully. You will be logged out.');
+        handleLogout();
+      } else {
+        const error = await response.json();
+        toast.error('Failed to delete account: ' + error.error);
+      }
+    } catch (error) {
+      toast.error('Failed to delete account');
+    } finally {
+      setDeleteLoading(false);
     }
   };
 
@@ -204,14 +305,14 @@ export default function ChatDashboard() {
       // Validate file type
       const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
       if (!allowedTypes.includes(file.type)) {
-        alert('Please select an image file (JPEG, PNG, GIF, WebP)');
+        toast.error('Please select an image file (JPEG, PNG, GIF, WebP)');
         return;
       }
 
       // Validate file size (5MB)
       const maxSize = 5 * 1024 * 1024;
       if (file.size > maxSize) {
-        alert('File size must be less than 5MB');
+        toast.error('File size must be less than 5MB');
         return;
       }
 
@@ -424,16 +525,15 @@ export default function ChatDashboard() {
 
       if (response.ok) {
         const result = await response.json();
-        console.log('Room created:', result);
+        toast.success('Room created successfully!');
         setShowCreateForm(false);
         setNewRoom({ room_name: '', description: '', is_private: false, room_pin: '' });
         fetchRooms(); // Refresh rooms list
       } else {
-        alert('Failed to create room');
+        toast.error('Failed to create room');
       }
     } catch (error) {
-      console.error('Error creating room:', error);
-      alert('Failed to create room');
+      toast.error('Failed to create room');
     }
   };
 
@@ -775,6 +875,12 @@ export default function ChatDashboard() {
         fetchRooms(); // Refresh rooms list
       });
 
+      // Listen for account deletion
+      newSocket.on('account_deleted', () => {
+        alert('Your account has been deleted. You will be logged out.');
+        handleLogout();
+      });
+
       setSocket(newSocket);
 
       return () => {
@@ -893,6 +999,12 @@ export default function ChatDashboard() {
 
  return (
   <div className="min-h-screen flex flex-col lg:flex-row bg-[#1e1e1e] text-white">
+    <Toaster 
+      theme="dark" 
+      position="bottom-right"
+      richColors
+      closeButton
+    />
     {/* Sidebar */}
     <aside className={`
       lg:w-64 w-full bg-[#2c2c2e] border-r border-[#3a3a3c]
@@ -1164,6 +1276,102 @@ export default function ChatDashboard() {
         </div>
       </div>
 
+      {/* Password Change Modal */}
+      {showPasswordChange && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[60] p-4">
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4 text-white">Change Password</h3>
+            <div className="space-y-4">
+              <input
+                type="password"
+                placeholder="Current Password"
+                value={passwordForm.currentPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, currentPassword: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              <input
+                type="password"
+                placeholder="New Password"
+                value={passwordForm.newPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, newPassword: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              <input
+                type="password"
+                placeholder="Confirm New Password"
+                value={passwordForm.confirmPassword}
+                onChange={(e) => setPasswordForm(prev => ({ ...prev, confirmPassword: e.target.value }))}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400"
+              />
+              
+              <div className="text-xs text-gray-400">
+                Password must be at least 6 characters long
+              </div>
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={changePassword}
+                  disabled={passwordLoading}
+                  className="bg-orange-600 text-white px-4 py-2 rounded-md hover:bg-orange-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {passwordLoading ? 'Changing...' : 'Change Password'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowPasswordChange(false);
+                    setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
+                  }}
+                  className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Account Modal */}
+      {showDeleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-[60] p-4">
+          <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4 text-white">Delete Account</h3>
+            <div className="space-y-4">
+              <div className="text-red-400 text-sm">
+                ⚠️ Warning: This action cannot be undone! All your data including messages, rooms, and files will be permanently deleted.
+              </div>
+              
+              <input
+                type="password"
+                placeholder="Enter your password to confirm"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                className="w-full px-3 py-2 bg-[#3a3a3c] text-white border border-[#48484a] rounded-md focus:outline-none focus:ring-2 focus:ring-red-400"
+              />
+
+              <div className="flex space-x-3">
+                <button
+                  onClick={deleteAccount}
+                  disabled={deleteLoading}
+                  className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors font-medium disabled:opacity-50"
+                >
+                  {deleteLoading ? 'Deleting...' : 'Delete Account'}
+                </button>
+                <button
+                  onClick={() => {
+                    setShowDeleteConfirm(false);
+                    setDeletePassword('');
+                  }}
+                  className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Profile Modal */}
       {showProfileModal && (
         <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
@@ -1221,14 +1429,50 @@ export default function ChatDashboard() {
                 </div>
               )}
 
-              <div className="flex space-x-3">
+              <div className="flex flex-wrap gap-2">
                 <button
                   onClick={updateProfile}
                   disabled={profileLoading}
-                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors font-medium disabled:opacity-50"
+                  className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors font-medium disabled:opacity-50 flex items-center space-x-2"
                 >
-                  {profileLoading ? 'Saving...' : 'Save Changes'}
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                  <span>{profileLoading ? 'Saving...' : 'Save'}</span>
                 </button>
+                
+                <button
+                  onClick={resetProfile}
+                  className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition-colors flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  <span>Reset</span>
+                </button>
+                
+                <button
+                  onClick={() => setShowDeleteConfirm(true)}
+                  className="bg-red-600 text-white px-4 py-2 rounded-md hover:bg-red-700 transition-colors flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                  <span>Delete</span>
+                </button>
+              </div>
+              
+              <div className="mt-4 pt-4 border-t border-[#48484a]">
+                <button
+                  onClick={() => setShowPasswordChange(true)}
+                  className="w-full bg-orange-600 text-white px-4 py-2 rounded-md hover:bg-orange-700 transition-colors flex items-center justify-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                  </svg>
+                  <span>Change Password</span>
+                </button>
+                
                 <button
                   onClick={() => {
                     setShowProfileModal(false);
@@ -1239,9 +1483,9 @@ export default function ChatDashboard() {
                       email: userProfile?.email || ''
                     });
                   }}
-                  className="bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
+                  className="w-full mt-2 bg-[#48484a] text-white px-4 py-2 rounded-md hover:bg-[#5c5c5e] transition-colors"
                 >
-                  Cancel
+                  Close
                 </button>
               </div>
             </div>
