@@ -132,6 +132,8 @@ export default function ChatDashboard() {
   const [showFriendsModal, setShowFriendsModal] = useState(false);
   const [friendUsername, setFriendUsername] = useState('');
   const [friendsLoading, setFriendsLoading] = useState(false);
+  const [friendsExpanded, setFriendsExpanded] = useState(false);
+  const [onlineUsersExpanded, setOnlineUsersExpanded] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -1212,9 +1214,7 @@ export default function ChatDashboard() {
 
       {/* Sidebar content */}
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        <div className="lg:hidden">
-          <h3 className="text-md font-medium mb-4">Online Users ({onlineUsers.length})</h3>
-        </div>
+        
         
         {/* Friends Section */}
         <div>
@@ -1227,8 +1227,8 @@ export default function ChatDashboard() {
               👥
             </button>
           </div>
-          <div className="space-y-1 max-h-32 overflow-y-auto">
-            {friends.slice(0, 5).map((friend) => (
+          <div className="space-y-1">
+            {(friendsExpanded ? friends : friends.slice(0, 3)).map((friend) => (
               <div key={friend.friendship_id} className="flex items-center space-x-2 px-2 py-1 text-sm">
                 <div className="relative flex-shrink-0">
                   <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
@@ -1247,35 +1247,66 @@ export default function ChatDashboard() {
                 <span className="text-white truncate flex-1">{friend.friend_username}</span>
               </div>
             ))}
-            {friends.length > 5 && (
-              <div className="text-xs text-gray-400 px-2">+{friends.length - 5} more...</div>
+            {friends.length > 3 && (
+              <button
+                onClick={() => setFriendsExpanded(!friendsExpanded)}
+                className="flex items-center justify-center px-2 py-1 text-xs text-gray-400 hover:text-gray-300 w-full transition-colors"
+              >
+                <svg 
+                  className={`w-3 h-3 mr-1 transition-transform ${friendsExpanded ? 'rotate-180' : ''}`} 
+                  fill="currentColor" 
+                  viewBox="0 0 20 20"
+                >
+                  <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+                {friendsExpanded ? 'Show less' : `+${friends.length - 3} more friends`}
+              </button>
             )}
             {friendRequests.length > 0 && (
-              <div className="text-xs text-orange-400 px-2">
+              <div className="text-xs text-orange-400 px-2 py-1">
                 {friendRequests.length} pending request{friendRequests.length > 1 ? 's' : ''}
               </div>
             )}
           </div>
         </div>
         
-        <div className="space-y-2 max-h-80 overflow-y-auto .hide-scrollbar">
-          {onlineUsers.map((user) => (
-            <div key={user.user_id} className="flex items-center space-x-3">
-              <div className="relative flex-shrink-0">
-                <div className="w-8 h-8 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
-                  {user.avatar_url ? (
-                    <img src={getAvatarUrl(user.avatar_url) || ''} alt={user.username} className="w-full h-full object-cover" />
-                  ) : (
-                    <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
-                      <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                    </svg>
-                  )}
+        {/* Online Users Section */}
+        <div>
+          <h3 className="text-sm font-medium mb-2">Online Users ({onlineUsers.length})</h3>
+          <div className="space-y-2">
+            {(onlineUsersExpanded ? onlineUsers : onlineUsers.slice(0, 3)).map((user) => (
+              <div key={user.user_id} className="flex items-center space-x-3">
+                <div className="relative flex-shrink-0">
+                  <div className="w-8 h-8 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                    {user.avatar_url ? (
+                      <img src={getAvatarUrl(user.avatar_url) || ''} alt={user.username} className="w-full h-full object-cover" />
+                    ) : (
+                      <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                      </svg>
+                    )}
+                  </div>
+                  <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-400 rounded-full border-2 border-[#2c2c2e]" />
                 </div>
-                <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-400 rounded-full border-2 border-[#2c2c2e]" />
+                <span className="text-sm text-white truncate flex-1">{user.username}</span>
               </div>
-              <span className="text-sm text-white truncate flex-1">{user.username}</span>
-            </div>
-          ))}
+            ))}
+            {onlineUsers.length > 3 && (
+              <button
+                onClick={() => setOnlineUsersExpanded(!onlineUsersExpanded)}
+                className="flex items-center justify-center px-2 py-1 text-xs text-gray-400 hover:text-gray-300 w-full transition-colors"
+              >
+                <svg 
+                  className={`w-3 h-3 mr-1 transition-transform ${onlineUsersExpanded ? 'rotate-180' : ''}`} 
+                  fill="currentColor" 
+                  viewBox="0 0 20 20"
+                >
+                  <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+                {onlineUsersExpanded ? 'Show less' : `+${onlineUsers.length - 3} more online`}
+              </button>
+            )}
+          </div>
         </div>
         <div>
           <div className="flex justify-between items-center mb-2">

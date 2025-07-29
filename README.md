@@ -15,6 +15,9 @@ BChat is a full-stack decentralized chat application that combines traditional r
 - **Room Management**: Create public/private rooms with PIN protection
 - **File Sharing**: Encrypted upload and share files with MinIO object storage
 - **User Profile Management**: Complete profile settings with avatar upload
+- **Friend System**: Send friend requests, manage friendships, and view friends list
+- **Friend Requests**: Real-time friend request notifications and management
+- **Online Status**: See which friends are currently online
 - **Password Management**: Secure password change functionality
 - **Account Management**: Safe account deletion with confirmation
 - **Database Integration**: PostgreSQL with in-memory fallback
@@ -150,6 +153,14 @@ Before running the application, ensure you have:
 - `GET /api/files/:roomId/:fileName` - Download decrypted file
 - `GET /api/avatars/:fileName` - Get user avatar
 
+### Friends
+- `GET /api/friends` - Get user's friends list
+- `POST /api/friends/request` - Send friend request
+- `POST /api/friends/accept` - Accept friend request
+- `POST /api/friends/reject` - Reject friend request
+- `DELETE /api/friends/:friendId` - Remove friend
+- `GET /api/friends/requests` - Get pending friend requests
+
 ### Blockchain
 - `GET /api/verify/:messageId` - Verify message on blockchain
 
@@ -225,6 +236,14 @@ const pool = new Pool({
 });
 ```
 
+### Database Schema
+The application includes these main tables:
+- **users**: User accounts with authentication and profile data
+- **chat_rooms**: Room information including public/private settings
+- **room_members**: User membership and roles in rooms
+- **messages**: Encrypted chat messages with blockchain hashes
+- **friendships**: Friend relationships between users &  Pending friend requests with status tracking
+
 ### MinIO Configuration
 ```javascript
 const minioClient = new Minio.Client({
@@ -282,6 +301,8 @@ const web3 = new Web3('http://ganache:8545');
 4. **Send messages** using the input field at the bottom
 5. **Upload files** using the attachment icon (files are encrypted)
 6. **Create rooms** using the "+" button next to "Rooms"
+7. **Add friends** by sending friend requests to other users
+8. **Manage friendships** through the friends section in the sidebar
 
 ### Profile Management
 - **Update Profile**: Access settings to change username and email
@@ -303,10 +324,18 @@ const web3 = new Web3('http://ganache:8545');
 - **Timestamps**: All messages show send time
 - **Message persistence**: Messages stored securely in database
 
+### Friend System Features
+- **Friend Requests**: Send and receive friend requests with real-time notifications
+- **Friends Management**: Accept, reject, or remove friends easily
+- **Online Status**: See which friends are currently online with green indicators
+- **Friends List**: View all friends in the sidebar with avatars and status
+- **Request Notifications**: Get notified when someone sends you a friend request
+
 ### Notification System
 - **Toast notifications**: Real-time feedback for all actions
 - **Error handling**: Clear error messages for failed operations
 - **Success confirmations**: Visual feedback for completed actions
+- **Friend notifications**: Real-time alerts for friend requests and status changes
 
 ## 🔄 Data Flow
 
