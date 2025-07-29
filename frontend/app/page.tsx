@@ -51,6 +51,31 @@ interface Room {
   created_at: string;
 }
 
+interface Friend {
+  friendship_id: string;
+  friend_id: string;
+  friend_username: string;
+  friend_avatar?: string;
+  created_at: string;
+  is_online: boolean;
+}
+
+interface FriendRequest {
+  friendship_id: string;
+  requester_id: string;
+  requester_username: string;
+  requester_avatar?: string;
+  created_at: string;
+}
+
+interface SentRequest {
+  friendship_id: string;
+  addressee_id: string;
+  addressee_username: string;
+  addressee_avatar?: string;
+  created_at: string;
+}
+
 export default function ChatDashboard() {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -101,6 +126,12 @@ export default function ChatDashboard() {
   const [deletePassword, setDeletePassword] = useState('');
   const [passwordLoading, setPasswordLoading] = useState(false);
   const [deleteLoading, setDeleteLoading] = useState(false);
+  const [friends, setFriends] = useState<Friend[]>([]);
+  const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
+  const [sentRequests, setSentRequests] = useState<SentRequest[]>([]);
+  const [showFriendsModal, setShowFriendsModal] = useState(false);
+  const [friendUsername, setFriendUsername] = useState('');
+  const [friendsLoading, setFriendsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -330,6 +361,131 @@ export default function ChatDashboard() {
       return `${getApiBase()}${avatarUrl}`;
     }
     return null;
+  };
+
+  // Fetch friends data
+  const fetchFriends = async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/friends`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setFriends(data.friends);
+        setFriendRequests(data.pending_requests);
+        setSentRequests(data.sent_requests);
+      }
+    } catch (error) {
+      toast.error('Error fetching friends');
+    }
+  };
+
+  // Send friend request
+  const sendFriendRequest = async () => {
+    if (!friendUsername.trim()) {
+      toast.error('Please enter a username');
+      return;
+    }
+
+    try {
+      setFriendsLoading(true);
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/friends/request`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ username: friendUsername.trim() })
+      });
+
+      if (response.ok) {
+        toast.success('Friend request sent!');
+        setFriendUsername('');
+        fetchFriends(); // Refresh friends list
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Failed to send friend request');
+      }
+    } catch (error) {
+      toast.error('Failed to send friend request');
+    } finally {
+      setFriendsLoading(false);
+    }
+  };
+
+  // Accept friend request
+  const acceptFriendRequest = async (friendshipId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/friends/${friendshipId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action: 'accept' })
+      });
+
+      if (response.ok) {
+        toast.success('Friend request accepted!');
+        fetchFriends(); // Refresh friends list
+      } else {
+        toast.error('Failed to accept friend request');
+      }
+    } catch (error) {
+      toast.error('Failed to accept friend request');
+    }
+  };
+
+  // Reject friend request
+  const rejectFriendRequest = async (friendshipId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/friends/${friendshipId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ action: 'reject' })
+      });
+
+      if (response.ok) {
+        toast.success('Friend request rejected');
+        fetchFriends(); // Refresh friends list
+      } else {
+        toast.error('Failed to reject friend request');
+      }
+    } catch (error) {
+      toast.error('Failed to reject friend request');
+    }
+  };
+
+  // Remove friend
+  const removeFriend = async (friendshipId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/friends/${friendshipId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        toast.success('Friend removed');
+        fetchFriends(); // Refresh friends list
+      } else {
+        toast.error('Failed to remove friend');
+      }
+    } catch (error) {
+      toast.error('Failed to remove friend');
+    }
   };
 
   const handleFileDownload = async (fileUrl: string, fileName: string) => {
@@ -878,6 +1034,22 @@ export default function ChatDashboard() {
         handleLogout();
       });
 
+      // Listen for friend requests
+      newSocket.on('friend_request_received', (data: any) => {
+        toast.info(`${data.requester_username} sent you a friend request!`);
+        fetchFriends(); // Refresh friends list
+      });
+
+      newSocket.on('friend_request_accepted', (data: any) => {
+        toast.success(`${data.username} accepted your friend request!`);
+        fetchFriends(); // Refresh friends list
+      });
+
+      newSocket.on('friend_request_rejected', (data: any) => {
+        toast.info(`${data.username} declined your friend request`);
+        fetchFriends(); // Refresh friends list
+      });
+
       setSocket(newSocket);
 
       return () => {
@@ -899,6 +1071,7 @@ export default function ChatDashboard() {
           setIsLoggedIn(true);
           await fetchRooms(); // Fetch rooms when logged in
           await fetchUserProfile(); // Fetch user profile
+          await fetchFriends(); // Fetch friends when logged in
         }
 
         // Check URL parameters for room
@@ -1038,6 +1211,49 @@ export default function ChatDashboard() {
         <div className="lg:hidden">
           <h3 className="text-md font-medium mb-4">Online Users ({onlineUsers.length})</h3>
         </div>
+        
+        {/* Friends Section */}
+        <div>
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-sm font-medium">Friends</h3>
+            <button
+              onClick={() => setShowFriendsModal(true)}
+              className="bg-green-600 text-white px-2 py-1 rounded text-xs hover:bg-green-700 transition-colors"
+            >
+              👥
+            </button>
+          </div>
+          <div className="space-y-1 max-h-32 overflow-y-auto">
+            {friends.slice(0, 5).map((friend) => (
+              <div key={friend.friendship_id} className="flex items-center space-x-2 px-2 py-1 text-sm">
+                <div className="relative flex-shrink-0">
+                  <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                    {friend.friend_avatar ? (
+                      <img src={getAvatarUrl(friend.friend_avatar) || ''} alt={friend.friend_username} className="w-full h-full object-cover" />
+                    ) : (
+                      <svg className="w-3 h-3 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                      </svg>
+                    )}
+                  </div>
+                  {friend.is_online && (
+                    <span className="absolute -bottom-1 -right-1 w-2 h-2 bg-green-400 rounded-full border border-[#2c2c2e]" />
+                  )}
+                </div>
+                <span className="text-white truncate flex-1">{friend.friend_username}</span>
+              </div>
+            ))}
+            {friends.length > 5 && (
+              <div className="text-xs text-gray-400 px-2">+{friends.length - 5} more...</div>
+            )}
+            {friendRequests.length > 0 && (
+              <div className="text-xs text-orange-400 px-2">
+                {friendRequests.length} pending request{friendRequests.length > 1 ? 's' : ''}
+              </div>
+            )}
+          </div>
+        </div>
+        
         <div className="space-y-2 max-h-80 overflow-y-auto .hide-scrollbar">
           {onlineUsers.map((user) => (
             <div key={user.user_id} className="flex items-center space-x-3">
@@ -1106,6 +1322,162 @@ export default function ChatDashboard() {
         </div>
       </div>
     </aside>
+
+    {/* Friends Modal */}
+    {showFriendsModal && (
+      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <div className="bg-[#2c2c2e] p-6 rounded-xl shadow-xl w-full max-w-2xl max-h-[80vh] overflow-y-auto">
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-lg font-semibold text-white">Friends & Requests</h3>
+            <button
+              onClick={() => setShowFriendsModal(false)}
+              className="text-gray-400 hover:text-white"
+            >
+              ✕
+            </button>
+          </div>
+          
+          {/* Add Friend Section */}
+          <div className="mb-6 p-4 bg-[#3a3a3c] rounded-lg">
+            <h4 className="text-md font-medium text-white mb-3">Add Friend</h4>
+            <div className="flex space-x-2">
+              <input
+                type="text"
+                placeholder="Enter username"
+                value={friendUsername}
+                onChange={(e) => setFriendUsername(e.target.value)}
+                className="flex-1 px-3 py-2 bg-[#48484a] text-white border border-[#5c5c5e] rounded-md focus:outline-none focus:ring-2 focus:ring-green-400"
+                onKeyDown={(e) => e.key === 'Enter' && sendFriendRequest()}
+              />
+              <button
+                onClick={sendFriendRequest}
+                disabled={friendsLoading}
+                className="bg-green-600 text-white px-4 py-2 rounded-md hover:bg-green-700 transition-colors disabled:opacity-50"
+              >
+                {friendsLoading ? 'Sending...' : 'Send'}
+              </button>
+            </div>
+          </div>
+
+          {/* Friend Requests */}
+          {friendRequests.length > 0 && (
+            <div className="mb-6">
+              <h4 className="text-md font-medium text-white mb-3">Friend Requests ({friendRequests.length})</h4>
+              <div className="space-y-2">
+                {friendRequests.map((request) => (
+                  <div key={request.friendship_id} className="flex items-center justify-between p-3 bg-[#3a3a3c] rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                        {request.requester_avatar ? (
+                          <img src={getAvatarUrl(request.requester_avatar) || ''} alt={request.requester_username} className="w-full h-full object-cover" />
+                        ) : (
+                          <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                          </svg>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-white font-medium">{request.requester_username}</div>
+                        <div className="text-xs text-gray-400">{new Date(request.created_at).toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                    <div className="flex space-x-2">
+                      <button
+                        onClick={() => acceptFriendRequest(request.friendship_id)}
+                        className="bg-green-600 text-white px-3 py-1 rounded text-sm hover:bg-green-700 transition-colors"
+                      >
+                        Accept
+                      </button>
+                      <button
+                        onClick={() => rejectFriendRequest(request.friendship_id)}
+                        className="bg-red-600 text-white px-3 py-1 rounded text-sm hover:bg-red-700 transition-colors"
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Friends List */}
+          <div className="mb-6">
+            <h4 className="text-md font-medium text-white mb-3">Friends ({friends.length})</h4>
+            {friends.length === 0 ? (
+              <div className="text-gray-400 text-center py-4">No friends yet</div>
+            ) : (
+              <div className="space-y-2">
+                {friends.map((friend) => (
+                  <div key={friend.friendship_id} className="flex items-center justify-between p-3 bg-[#3a3a3c] rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="relative">
+                        <div className="w-10 h-10 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                          {friend.friend_avatar ? (
+                            <img src={getAvatarUrl(friend.friend_avatar) || ''} alt={friend.friend_username} className="w-full h-full object-cover" />
+                          ) : (
+                            <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                              <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                            </svg>
+                          )}
+                        </div>
+                        {friend.is_online && (
+                          <span className="absolute -bottom-1 -right-1 w-3 h-3 bg-green-400 rounded-full border-2 border-[#2c2c2e]" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-white font-medium">{friend.friend_username}</div>
+                        <div className="text-xs text-gray-400">
+                          {friend.is_online ? 'Online' : 'Offline'} • Friends since {new Date(friend.created_at).toLocaleDateString()}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => removeFriend(friend.friendship_id)}
+                      className="text-red-400 hover:text-red-300 p-2 rounded hover:bg-red-900/20 transition-colors"
+                      title="Remove friend"
+                    >
+                      <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Sent Requests */}
+          {sentRequests.length > 0 && (
+            <div>
+              <h4 className="text-md font-medium text-white mb-3">Sent Requests ({sentRequests.length})</h4>
+              <div className="space-y-2">
+                {sentRequests.map((request) => (
+                  <div key={request.friendship_id} className="flex items-center justify-between p-3 bg-[#3a3a3c] rounded-lg">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                        {request.addressee_avatar ? (
+                          <img src={getAvatarUrl(request.addressee_avatar) || ''} alt={request.addressee_username} className="w-full h-full object-cover" />
+                        ) : (
+                          <svg className="w-5 h-5 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                          </svg>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-white font-medium">{request.addressee_username}</div>
+                        <div className="text-xs text-gray-400">Sent on {new Date(request.created_at).toLocaleDateString()}</div>
+                      </div>
+                    </div>
+                    <div className="text-yellow-400 text-sm">Pending</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
 
     {/* PIN Verification Dialog */}
     {showPinDialog && (

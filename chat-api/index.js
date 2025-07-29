@@ -171,10 +171,24 @@ async function initializeDatabaseTables(client) {
     )
   `;
 
+  // Create friendships table
+  const createFriendships = `
+    CREATE TABLE IF NOT EXISTS friendships (
+      friendship_id VARCHAR(50) PRIMARY KEY,
+      requester_id VARCHAR(50) NOT NULL,
+      addressee_id VARCHAR(50) NOT NULL,
+      status VARCHAR(20) DEFAULT 'pending',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(requester_id, addressee_id)
+    )
+  `;
+
   await client.query(createUsers);
   await client.query(createRooms);
   await client.query(createMessages);
   await client.query(createRoomMembers);
+  await client.query(createFriendships);
 
   // Insert default rooms
   const insertDefaultRooms = `
@@ -2118,6 +2132,419 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error changing password:', error);
     res.status(500).json({ error: 'Failed to change password: ' + error.message });
+  }
+});
+
+// Send friend request
+app.post('/api/friends/request', authenticateToken, async (req, res) => {
+  try {
+    const { username } = req.body;
+    
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    if (username === req.user.username) {
+      return res.status(400).json({ error: 'Cannot send friend request to yourself' });
+    }
+
+    let targetUser = null;
+    let friendshipId = uuidv4();
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        // Find target user
+        const userResult = await client.query(
+          'SELECT user_id, username FROM users WHERE username = $1',
+          [username]
+        );
+
+        if (userResult.rows.length === 0) {
+          client.release();
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        targetUser = userResult.rows[0];
+
+        // Check if friendship already exists
+        const existingFriendship = await client.query(
+          `SELECT * FROM friendships 
+           WHERE (requester_id = $1 AND addressee_id = $2) 
+           OR (requester_id = $2 AND addressee_id = $1)`,
+          [req.user.user_id, targetUser.user_id]
+        );
+
+        if (existingFriendship.rows.length > 0) {
+          const friendship = existingFriendship.rows[0];
+          let message = '';
+          if (friendship.status === 'accepted') {
+            message = 'You are already friends with this user';
+          } else if (friendship.status === 'pending') {
+            if (friendship.requester_id === req.user.user_id) {
+              message = 'Friend request already sent';
+            } else {
+              message = 'This user has already sent you a friend request';
+            }
+          }
+          client.release();
+          return res.status(400).json({ error: message });
+        }
+
+        // Create friend request
+        await client.query(
+          `INSERT INTO friendships (friendship_id, requester_id, addressee_id, status) 
+           VALUES ($1, $2, $3, 'pending')`,
+          [friendshipId, req.user.user_id, targetUser.user_id]
+        );
+
+        client.release();
+      } catch (dbError) {
+        console.error('Database friend request failed:', dbError);
+        return res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      targetUser = Array.from(inMemoryUsers.values()).find(u => u.username === username);
+      if (!targetUser) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      // For in-memory, we'll use a simple global map
+      if (!global.inMemoryFriendships) {
+        global.inMemoryFriendships = new Map();
+      }
+
+      const existingKey = `${req.user.user_id}-${targetUser.user_id}`;
+      const reverseKey = `${targetUser.user_id}-${req.user.user_id}`;
+      
+      if (global.inMemoryFriendships.has(existingKey) || global.inMemoryFriendships.has(reverseKey)) {
+        return res.status(400).json({ error: 'Friend request already exists' });
+      }
+
+      global.inMemoryFriendships.set(existingKey, {
+        friendship_id: friendshipId,
+        requester_id: req.user.user_id,
+        addressee_id: targetUser.user_id,
+        status: 'pending',
+        created_at: new Date().toISOString()
+      });
+    }
+
+    // Notify target user via socket if online
+    const targetConnection = connectedUsers.get(targetUser.user_id);
+    if (targetConnection && targetConnection.socket_id) {
+      io.to(targetConnection.socket_id).emit('friend_request_received', {
+        friendship_id: friendshipId,
+        requester_username: req.user.username,
+        requester_id: req.user.user_id
+      });
+    }
+
+    res.json({ 
+      message: 'Friend request sent successfully',
+      friendship_id: friendshipId 
+    });
+  } catch (error) {
+    console.error('Error sending friend request:', error);
+    res.status(500).json({ error: 'Failed to send friend request: ' + error.message });
+  }
+});
+
+// Get friends and friend requests
+app.get('/api/friends', authenticateToken, async (req, res) => {
+  try {
+    let friends = [];
+    let pendingRequests = [];
+    let sentRequests = [];
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        // Get accepted friendships
+        const friendsResult = await client.query(
+          `SELECT f.friendship_id, f.requester_id, f.addressee_id, f.created_at,
+                  CASE 
+                    WHEN f.requester_id = $1 THEN u2.username 
+                    ELSE u1.username 
+                  END as friend_username,
+                  CASE 
+                    WHEN f.requester_id = $1 THEN u2.user_id 
+                    ELSE u1.user_id 
+                  END as friend_id,
+                  CASE 
+                    WHEN f.requester_id = $1 THEN u2.avatar_url 
+                    ELSE u1.avatar_url 
+                  END as friend_avatar
+           FROM friendships f
+           JOIN users u1 ON f.requester_id = u1.user_id
+           JOIN users u2 ON f.addressee_id = u2.user_id
+           WHERE (f.requester_id = $1 OR f.addressee_id = $1) AND f.status = 'accepted'
+           ORDER BY f.created_at DESC`,
+          [req.user.user_id]
+        );
+
+        friends = friendsResult.rows.map(row => ({
+          friendship_id: row.friendship_id,
+          friend_id: row.friend_id,
+          friend_username: row.friend_username,
+          friend_avatar: row.friend_avatar,
+          created_at: row.created_at,
+          is_online: connectedUsers.has(row.friend_id)
+        }));
+
+        // Get pending requests received
+        const pendingResult = await client.query(
+          `SELECT f.friendship_id, f.requester_id, f.created_at, u.username, u.avatar_url
+           FROM friendships f
+           JOIN users u ON f.requester_id = u.user_id
+           WHERE f.addressee_id = $1 AND f.status = 'pending'
+           ORDER BY f.created_at DESC`,
+          [req.user.user_id]
+        );
+
+        pendingRequests = pendingResult.rows.map(row => ({
+          friendship_id: row.friendship_id,
+          requester_id: row.requester_id,
+          requester_username: row.username,
+          requester_avatar: row.avatar_url,
+          created_at: row.created_at
+        }));
+
+        // Get sent requests
+        const sentResult = await client.query(
+          `SELECT f.friendship_id, f.addressee_id, f.created_at, u.username, u.avatar_url
+           FROM friendships f
+           JOIN users u ON f.addressee_id = u.user_id
+           WHERE f.requester_id = $1 AND f.status = 'pending'
+           ORDER BY f.created_at DESC`,
+          [req.user.user_id]
+        );
+
+        sentRequests = sentResult.rows.map(row => ({
+          friendship_id: row.friendship_id,
+          addressee_id: row.addressee_id,
+          addressee_username: row.username,
+          addressee_avatar: row.avatar_url,
+          created_at: row.created_at
+        }));
+
+        client.release();
+      } catch (dbError) {
+        console.error('Database friends fetch failed:', dbError);
+        return res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      if (global.inMemoryFriendships) {
+        for (const [key, friendship] of global.inMemoryFriendships.entries()) {
+          if (friendship.requester_id === req.user.user_id || friendship.addressee_id === req.user.user_id) {
+            const friendId = friendship.requester_id === req.user.user_id ? friendship.addressee_id : friendship.requester_id;
+            const friendUser = inMemoryUsers.get(friendId);
+            
+            if (friendship.status === 'accepted') {
+              friends.push({
+                friendship_id: friendship.friendship_id,
+                friend_id: friendId,
+                friend_username: friendUser?.username || 'Unknown',
+                friend_avatar: friendUser?.avatar_url || null,
+                created_at: friendship.created_at,
+                is_online: connectedUsers.has(friendId)
+              });
+            } else if (friendship.status === 'pending') {
+              if (friendship.addressee_id === req.user.user_id) {
+                pendingRequests.push({
+                  friendship_id: friendship.friendship_id,
+                  requester_id: friendship.requester_id,
+                  requester_username: friendUser?.username || 'Unknown',
+                  requester_avatar: friendUser?.avatar_url || null,
+                  created_at: friendship.created_at
+                });
+              } else {
+                sentRequests.push({
+                  friendship_id: friendship.friendship_id,
+                  addressee_id: friendship.addressee_id,
+                  addressee_username: friendUser?.username || 'Unknown',
+                  addressee_avatar: friendUser?.avatar_url || null,
+                  created_at: friendship.created_at
+                });
+              }
+            }
+          }
+        }
+      }
+    }
+
+    res.json({
+      friends,
+      pending_requests: pendingRequests,
+      sent_requests: sentRequests
+    });
+  } catch (error) {
+    console.error('Error fetching friends:', error);
+    res.status(500).json({ error: 'Failed to fetch friends: ' + error.message });
+  }
+});
+
+// Accept or reject friend request
+app.put('/api/friends/:friendshipId', authenticateToken, async (req, res) => {
+  try {
+    const { friendshipId } = req.params;
+    const { action } = req.body; // 'accept' or 'reject'
+    
+    if (!['accept', 'reject'].includes(action)) {
+      return res.status(400).json({ error: 'Invalid action. Use "accept" or "reject"' });
+    }
+
+    let friendship = null;
+    let requesterUser = null;
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        // Get friendship details
+        const friendshipResult = await client.query(
+          `SELECT f.*, u.username as requester_username 
+           FROM friendships f
+           JOIN users u ON f.requester_id = u.user_id
+           WHERE f.friendship_id = $1 AND f.addressee_id = $2 AND f.status = 'pending'`,
+          [friendshipId, req.user.user_id]
+        );
+
+        if (friendshipResult.rows.length === 0) {
+          client.release();
+          return res.status(404).json({ error: 'Friend request not found' });
+        }
+
+        friendship = friendshipResult.rows[0];
+        requesterUser = { username: friendship.requester_username, user_id: friendship.requester_id };
+
+        if (action === 'accept') {
+          await client.query(
+            'UPDATE friendships SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE friendship_id = $2',
+            ['accepted', friendshipId]
+          );
+        } else {
+          await client.query(
+            'DELETE FROM friendships WHERE friendship_id = $1',
+            [friendshipId]
+          );
+        }
+
+        client.release();
+      } catch (dbError) {
+        console.error('Database friendship update failed:', dbError);
+        return res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      if (global.inMemoryFriendships) {
+        for (const [key, f] of global.inMemoryFriendships.entries()) {
+          if (f.friendship_id === friendshipId && f.addressee_id === req.user.user_id && f.status === 'pending') {
+            friendship = f;
+            requesterUser = inMemoryUsers.get(f.requester_id);
+            break;
+          }
+        }
+
+        if (!friendship) {
+          return res.status(404).json({ error: 'Friend request not found' });
+        }
+
+        if (action === 'accept') {
+          for (const [key, f] of global.inMemoryFriendships.entries()) {
+            if (f.friendship_id === friendshipId) {
+              f.status = 'accepted';
+              f.updated_at = new Date().toISOString();
+              global.inMemoryFriendships.set(key, f);
+              break;
+            }
+          }
+        } else {
+          for (const [key, f] of global.inMemoryFriendships.entries()) {
+            if (f.friendship_id === friendshipId) {
+              global.inMemoryFriendships.delete(key);
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // Notify requester via socket if online
+    const requesterConnection = connectedUsers.get(friendship.requester_id);
+    if (requesterConnection && requesterConnection.socket_id) {
+      io.to(requesterConnection.socket_id).emit('friend_request_' + (action === 'accept' ? 'accepted' : 'rejected'), {
+        friendship_id: friendshipId,
+        username: req.user.username,
+        user_id: req.user.user_id
+      });
+    }
+
+    res.json({ 
+      message: `Friend request ${action}ed successfully`,
+      action: action
+    });
+  } catch (error) {
+    console.error('Error updating friend request:', error);
+    res.status(500).json({ error: 'Failed to update friend request: ' + error.message });
+  }
+});
+
+// Remove friend
+app.delete('/api/friends/:friendshipId', authenticateToken, async (req, res) => {
+  try {
+    const { friendshipId } = req.params;
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        
+        const result = await client.query(
+          `DELETE FROM friendships 
+           WHERE friendship_id = $1 
+           AND (requester_id = $2 OR addressee_id = $2) 
+           AND status = 'accepted'`,
+          [friendshipId, req.user.user_id]
+        );
+
+        if (result.rowCount === 0) {
+          client.release();
+          return res.status(404).json({ error: 'Friendship not found' });
+        }
+
+        client.release();
+      } catch (dbError) {
+        console.error('Database friendship removal failed:', dbError);
+        return res.status(500).json({ error: 'Database error' });
+      }
+    } else {
+      // Use in-memory storage
+      let found = false;
+      if (global.inMemoryFriendships) {
+        for (const [key, f] of global.inMemoryFriendships.entries()) {
+          if (f.friendship_id === friendshipId && 
+              (f.requester_id === req.user.user_id || f.addressee_id === req.user.user_id) && 
+              f.status === 'accepted') {
+            global.inMemoryFriendships.delete(key);
+            found = true;
+            break;
+          }
+        }
+      }
+
+      if (!found) {
+        return res.status(404).json({ error: 'Friendship not found' });
+      }
+    }
+
+    res.json({ message: 'Friend removed successfully' });
+  } catch (error) {
+    console.error('Error removing friend:', error);
+    res.status(500).json({ error: 'Failed to remove friend: ' + error.message });
   }
 });
 
