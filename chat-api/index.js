@@ -1245,6 +1245,37 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
   try {
     let rooms = [];
     
+    // Always ensure default rooms exist
+    const defaultRooms = [
+      {
+        room_id: 'general',
+        room_name: 'General Chat',
+        description: 'Main chat room for everyone',
+        created_by: 'system',
+        is_private: false,
+        room_type: 'public',
+        created_at: new Date('2024-01-01').toISOString()
+      },
+      {
+        room_id: 'tech',
+        room_name: 'Tech Talk',
+        description: 'Discuss technology, programming, and development',
+        created_by: 'system',
+        is_private: false,
+        room_type: 'public',
+        created_at: new Date('2024-01-01').toISOString()
+      },
+      {
+        room_id: 'random',
+        room_name: 'Random',
+        description: 'Off-topic discussions and casual chat',
+        created_by: 'system',
+        is_private: false,
+        room_type: 'public',
+        created_at: new Date('2024-01-01').toISOString()
+      }
+    ];
+    
     if (dbAvailable) {
       try {
         const client = await pool.connect();
@@ -1269,21 +1300,36 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
     }
     
     if (!dbAvailable) {
-      // Use in-memory storage
-      if (global.inMemoryRooms) {
-        rooms = Array.from(global.inMemoryRooms.values()).map(room => ({
-          room_id: room.room_id,
-          room_name: room.room_name,
-          description: room.description,
-          created_by: room.created_by,
-          created_at: room.created_at,
-          is_private: room.is_private,
-          room_type: room.room_type
-        }));
-        
-        // Sort by created_at DESC
-        rooms.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+      // Ensure in-memory rooms exist
+      if (!global.inMemoryRooms) {
+        global.inMemoryRooms = new Map();
       }
+      
+      // Add default rooms to memory if they don't exist
+      defaultRooms.forEach(room => {
+        if (!global.inMemoryRooms.has(room.room_id)) {
+          global.inMemoryRooms.set(room.room_id, room);
+        }
+      });
+      
+      // Use in-memory storage
+      rooms = Array.from(global.inMemoryRooms.values()).map(room => ({
+        room_id: room.room_id,
+        room_name: room.room_name,
+        description: room.description,
+        created_by: room.created_by,
+        created_at: room.created_at,
+        is_private: room.is_private,
+        room_type: room.room_type
+      }));
+      
+      // Sort by created_at DESC
+      rooms.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+    }
+
+    // If no rooms found, return default rooms
+    if (rooms.length === 0) {
+      rooms = defaultRooms;
     }
 
     res.json(rooms);

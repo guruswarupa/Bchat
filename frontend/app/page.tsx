@@ -842,8 +842,11 @@ export default function ChatDashboard() {
         setUsername(data.user.username);
         setCurrentUser(data.user);
         setIsLoggedIn(true);
-        // Fetch full profile after login
-        setTimeout(() => fetchUserProfile(), 100);
+        // Fetch full profile and rooms after login
+        setTimeout(() => {
+          fetchUserProfile();
+          fetchRooms();
+        }, 100);
       } else {
         toast.error(isRegistering ? 'Registration failed' : 'Login failed');
       }
@@ -963,8 +966,9 @@ export default function ChatDashboard() {
         // Join current room after a brief delay to ensure user_join is processed
         setTimeout(() => {
           newSocket.emit('join_room', currentRoom);
-          // Fetch messages for the current room
+          // Fetch messages and rooms for the current room
           fetchMessages();
+          fetchRooms();
         }, 100);
       });
 
