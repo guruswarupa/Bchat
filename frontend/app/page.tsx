@@ -24,6 +24,8 @@ interface Message {
   created_at?: string;
   file_url?: string;
   blockchain_hash?: string;
+  is_edited?: boolean;
+  edited_at?: string;
 }
 
 interface User {
@@ -134,6 +136,11 @@ export default function ChatDashboard() {
   const [friendsLoading, setFriendsLoading] = useState(false);
   const [friendsExpanded, setFriendsExpanded] = useState(false);
   const [onlineUsersExpanded, setOnlineUsersExpanded] = useState(false);
+  const [editingMessage, setEditingMessage] = useState<string>('');
+  const [editContent, setEditContent] = useState<string>('');
+  const [hoveredFriend, setHoveredFriend] = useState<string>('');
+  const [friendProfile, setFriendProfile] = useState<any>(null);
+  const [profileHoverTimeout, setProfileHoverTimeout] = useState<NodeJS.Timeout | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Professional Delete Icon Component
@@ -487,6 +494,75 @@ export default function ChatDashboard() {
       }
     } catch (error) {
       toast.error('Failed to remove friend');
+    }
+  };
+
+  // Edit message
+  const editMessage = (messageId: string, currentContent: string) => {
+    setEditingMessage(messageId);
+    setEditContent(currentContent);
+  };
+
+  // Save edited message
+  const saveEditedMessage = () => {
+    if (socket && editContent.trim()) {
+      socket.emit('edit_message', {
+        messageId: editingMessage,
+        newContent: editContent.trim()
+      });
+      setEditingMessage('');
+      setEditContent('');
+    }
+  };
+
+  // Cancel edit
+  const cancelEdit = () => {
+    setEditingMessage('');
+    setEditContent('');
+  };
+
+  // Delete message
+  const deleteMessage = (messageId: string) => {
+    if (socket && confirm('Are you sure you want to delete this message?')) {
+      socket.emit('delete_message', { messageId });
+    }
+  };
+
+  // Fetch friend profile for hover
+  const fetchFriendProfile = async (userId: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${getApiBase()}/api/users/${userId}/profile`, {
+        headers: {
+          'Authorization': `Bearer ${token}`
+        }
+      });
+
+      if (response.ok) {
+        const profile = await response.json();
+        setFriendProfile(profile);
+      }
+    } catch (error) {
+      console.error('Error fetching friend profile:', error);
+    }
+  };
+
+  // Handle friend hover
+  const handleFriendMouseEnter = (userId: string) => {
+    setHoveredFriend(userId);
+    const timeout = setTimeout(() => {
+      fetchFriendProfile(userId);
+    }, 500); // Delay to avoid too many requests
+    setProfileHoverTimeout(timeout);
+  };
+
+  // Handle friend hover leave
+  const handleFriendMouseLeave = () => {
+    setHoveredFriend('');
+    setFriendProfile(null);
+    if (profileHoverTimeout) {
+      clearTimeout(profileHoverTimeout);
+      setProfileHoverTimeout(null);
     }
   };
 
@@ -1040,6 +1116,20 @@ export default function ChatDashboard() {
         handleLogout();
       });
 
+      // Listen for message edits
+      newSocket.on('message_edited', (data: any) => {
+        setMessages(prev => prev.map(msg => 
+          msg.message_id === data.messageId 
+            ? { ...msg, content: data.newContent, is_edited: true, edited_at: data.editedAt }
+            : msg
+        ));
+      });
+
+      // Listen for message deletions
+      newSocket.on('message_deleted', (data: any) => {
+        setMessages(prev => prev.filter(msg => msg.message_id !== data.messageId));
+      });
+
       // Listen for friend requests
       newSocket.on('friend_request_received', (data: any) => {
         toast.info(`${data.requester_username} sent you a friend request!`);
@@ -1229,7 +1319,12 @@ export default function ChatDashboard() {
           </div>
           <div className="space-y-1">
             {(friendsExpanded ? friends : friends.slice(0, 3)).map((friend) => (
-              <div key={friend.friendship_id} className="flex items-center space-x-2 px-2 py-1 text-sm">
+              <div 
+                key={friend.friendship_id} 
+                className="relative flex items-center space-x-2 px-2 py-1 text-sm cursor-pointer hover:bg-[#48484a] rounded"
+                onMouseEnter={() => handleFriendMouseEnter(friend.friend_id)}
+                onMouseLeave={handleFriendMouseLeave}
+              >
                 <div className="relative flex-shrink-0">
                   <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
                     {friend.friend_avatar ? (
@@ -1245,6 +1340,37 @@ export default function ChatDashboard() {
                   )}
                 </div>
                 <span className="text-white truncate flex-1">{friend.friend_username}</span>
+                
+                {/* Profile Tooltip */}
+                {hoveredFriend === friend.friend_id && friendProfile && (
+                  <div className="absolute left-full ml-2 top-0 bg-[#2c2c2e] border border-[#48484a] rounded-lg p-3 shadow-xl z-[100] min-w-[200px]">
+                    <div className="flex items-center space-x-3 mb-2">
+                      <div className="w-10 h-10 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center">
+                        {friendProfile.avatar_url ? (
+                          <img src={getAvatarUrl(friendProfile.avatar_url) || ''} alt={friendProfile.username} className="w-full h-full object-cover" />
+                        ) : (
+                          <svg className="w-6 h-6 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                          </svg>
+                        )}
+                      </div>
+                      <div>
+                        <div className="text-white font-medium">{friendProfile.username}</div>
+                        <div className="text-xs text-gray-400">
+                          {friendProfile.is_online ? 'Online' : `Last seen ${new Date(friendProfile.last_seen).toLocaleString()}`}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-400">
+                      Member since {new Date(friendProfile.created_at).toLocaleDateString()}
+                    </div>
+                    {friendProfile.status && friendProfile.status !== 'online' && (
+                      <div className="text-xs text-yellow-400 mt-1">
+                        Status: {friendProfile.status}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {friends.length > 3 && (
@@ -1948,25 +2074,80 @@ export default function ChatDashboard() {
           <div className="text-gray-500 text-center mt-10">No messages yet</div>
         )}
         {messages.map((msg) => (
-          <div key={msg.message_id} className="bg-[#3a3a3c] p-3 rounded-xl shadow">
-            <div className="flex items-center text-sm text-gray-300 mb-1">
-              <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center mr-2 flex-shrink-0">
-                {/* For now, show default avatar - you could extend this to show user avatars if available */}
-                <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
-                  <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
-                </svg>
+          <div key={msg.message_id} className="bg-[#3a3a3c] p-3 rounded-xl shadow group relative">
+            <div className="flex items-center justify-between text-sm text-gray-300 mb-1">
+              <div className="flex items-center">
+                <div className="w-6 h-6 rounded-full overflow-hidden bg-[#48484a] flex items-center justify-center mr-2 flex-shrink-0">
+                  <svg className="w-4 h-4 text-gray-400" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+                  </svg>
+                </div>
+                <span className="font-semibold text-white mr-2">{msg.username}</span>
+                <span className="text-xs">
+                  {new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}
+                  {msg.is_edited && (
+                    <span className="ml-1 text-gray-500">(edited)</span>
+                  )}
+                </span>
+                {msg.blockchain_hash && (
+                  <span className="ml-2 text-green-400 text-xs">🔗 Verified</span>
+                )}
+                {msg.message_type === 'file' && (
+                  <span className="ml-2 text-blue-400 text-xs">📎 File</span>
+                )}
               </div>
-              <span className="font-semibold text-white mr-2">{msg.username}</span>
-              <span className="text-xs">{new Date(msg.timestamp || msg.created_at || '').toLocaleTimeString()}</span>
-              {msg.blockchain_hash && (
-                <span className="ml-2 text-green-400 text-xs">🔗 Verified</span>
-              )}
-              {msg.message_type === 'file' && (
-                <span className="ml-2 text-blue-400 text-xs">📎 File</span>
+              
+              {/* Message Actions - only show for own messages and text messages */}
+              {msg.user_id === currentUser?.user_id && msg.message_type === 'text' && (
+                <div className="opacity-0 group-hover:opacity-100 flex space-x-1 transition-opacity">
+                  <button
+                    onClick={() => editMessage(msg.message_id, msg.content)}
+                    className="text-gray-400 hover:text-blue-400 p-1 rounded hover:bg-[#48484a]"
+                    title="Edit message"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                    </svg>
+                  </button>
+                  <button
+                    onClick={() => deleteMessage(msg.message_id)}
+                    className="text-gray-400 hover:text-red-400 p-1 rounded hover:bg-[#48484a]"
+                    title="Delete message"
+                  >
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                  </button>
+                </div>
               )}
             </div>
+            
             <div className="text-white text-sm break-words">
-              {msg.message_type === 'file' && msg.file_url ? (
+              {editingMessage === msg.message_id ? (
+                <div className="space-y-2">
+                  <textarea
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    className="w-full p-2 bg-[#48484a] text-white border border-[#5c5c5e] rounded-md focus:outline-none focus:ring-2 focus:ring-blue-400 resize-none"
+                    rows={2}
+                    autoFocus
+                  />
+                  <div className="flex space-x-2">
+                    <button
+                      onClick={saveEditedMessage}
+                      className="bg-green-600 text-white px-3 py-1 rounded text-xs hover:bg-green-700 transition-colors"
+                    >
+                      Save
+                    </button>
+                    <button
+                      onClick={cancelEdit}
+                      className="bg-gray-600 text-white px-3 py-1 rounded text-xs hover:bg-gray-700 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : msg.message_type === 'file' && msg.file_url ? (
                 <div>
                   <p className="mb-2">{msg.content}</p>
                   

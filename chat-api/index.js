@@ -123,7 +123,8 @@ async function initializeDatabaseTables(client) {
       avatar_url VARCHAR(500),
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      is_online BOOLEAN DEFAULT FALSE
+      is_online BOOLEAN DEFAULT FALSE,
+      status VARCHAR(50) DEFAULT 'online'
     )
   `;
 
@@ -217,7 +218,7 @@ async function initializeDatabase(retryCount = 0, maxRetries = 10) {
     return true;
   } catch (error) {
     console.error('Database initialization error:', error.message);
-    
+
     if (retryCount < maxRetries) {
       console.log(`Retrying database connection in 3 seconds... (${retryCount + 1}/${maxRetries})`);
       await new Promise(resolve => setTimeout(resolve, 3000));
@@ -225,7 +226,7 @@ async function initializeDatabase(retryCount = 0, maxRetries = 10) {
     } else {
       console.log('Max retries reached. Falling back to in-memory storage for development');
       dbAvailable = false;
-      
+
       // Initialize in-memory storage
       if (!global.inMemoryRooms) {
         global.inMemoryRooms = new Map();
@@ -262,7 +263,7 @@ async function initializeDatabase(retryCount = 0, maxRetries = 10) {
             created_at: new Date().toISOString()
           }
         ];
-        
+
         defaultRooms.forEach(room => {
           global.inMemoryRooms.set(room.room_id, room);
         });
@@ -342,7 +343,7 @@ async function isRoomMember(userId, roomId) {
   try {
     if (dbAvailable) {
       const client = await pool.connect();
-      
+
       // Check if user is a member of the room or if it's a public room
       const result = await client.query(
         `SELECT COUNT(*) FROM room_members rm 
@@ -350,7 +351,7 @@ async function isRoomMember(userId, roomId) {
          WHERE rm.room_id = $1 AND (rm.user_id = $2 OR cr.is_private = FALSE)`,
         [roomId, userId]
       );
-      
+
       client.release();
       return parseInt(result.rows[0].count) > 0;
     } else {
@@ -430,17 +431,17 @@ io.on('connection', (socket) => {
     // Leave current room first
     if (socket.currentRoom && socket.currentRoom !== roomId) {
       socket.leave(socket.currentRoom);
-      
+
       // Remove user from previous room's user list
       if (roomUsers.has(socket.currentRoom)) {
         const prevRoomUsers = roomUsers.get(socket.currentRoom);
         if (socket.userId && prevRoomUsers.has(socket.userId)) {
           prevRoomUsers.delete(socket.userId);
           console.log(`User ${socket.username} left room ${socket.currentRoom}`);
-          
+
           // Broadcast updated user list to previous room only
           io.to(socket.currentRoom).emit('users_update', Array.from(prevRoomUsers.values()));
-          
+
           // Clean up empty room
           if (prevRoomUsers.size === 0) {
             roomUsers.delete(socket.currentRoom);
@@ -453,21 +454,21 @@ io.on('connection', (socket) => {
     if (socket.userId && dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Check if user is already a member or if room is public
         const memberCheck = await client.query(
           `SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND user_id = $2`,
           [roomId, socket.userId]
         );
-        
+
         const roomCheck = await client.query(
           `SELECT is_private FROM chat_rooms WHERE room_id = $1`,
           [roomId]
         );
-        
+
         const isMember = parseInt(memberCheck.rows[0].count) > 0;
         const isPrivate = roomCheck.rows.length > 0 ? roomCheck.rows[0].is_private : false;
-        
+
         // Auto-join public rooms
         if (!isMember && !isPrivate) {
           await client.query(
@@ -476,7 +477,7 @@ io.on('connection', (socket) => {
           );
           console.log(`User ${socket.username} auto-joined public room ${roomId}`);
         }
-        
+
         client.release();
       } catch (error) {
         console.error('Error handling room membership:', error);
@@ -486,12 +487,12 @@ io.on('connection', (socket) => {
     // Join new room
     socket.join(roomId);
     socket.currentRoom = roomId;
-    
+
     // Initialize room users map if it doesn't exist
     if (!roomUsers.has(roomId)) {
       roomUsers.set(roomId, new Map());
     }
-    
+
     // Add user to new room's user list
     if (socket.userId && socket.username) {
       const roomUsersList = roomUsers.get(roomId);
@@ -500,14 +501,14 @@ io.on('connection', (socket) => {
         username: socket.username,
         is_online: true
       });
-      
+
       // Update global user's current room
       if (connectedUsers.has(socket.userId)) {
         const user = connectedUsers.get(socket.userId);
         user.current_room = roomId;
         connectedUsers.set(socket.userId, user);
       }
-      
+
       console.log(`User ${socket.username} joined room ${roomId}, room now has ${roomUsersList.size} users`);
 
       // Broadcast updated user list ONLY to users in this specific room
@@ -526,6 +527,76 @@ io.on('connection', (socket) => {
   socket.on('leave_room', (roomId) => {
     socket.leave(roomId);
     console.log(`User ${socket.id} left room ${roomId}`);
+  });
+
+  // Listen for message edits
+  socket.on('edit_message', async (data) => {
+    try {
+      const { messageId, newContent } = data;
+      const userId = socket.userId;
+
+      if (!userId || !messageId || !newContent) {
+        socket.emit('error', 'Missing user ID, message ID, or new content');
+        return;
+      }
+
+      // Update message in database (only if user owns the message)
+      const result = await pool.query(
+        'UPDATE messages SET content = $1, is_edited = true, edited_at = NOW() WHERE message_id = $2 AND user_id = $3 RETURNING *',
+        [newContent.trim(), messageId, userId]
+      );
+
+      if (result.rows.length > 0) {
+        const updatedMessage = result.rows[0];
+
+        // Emit to all users in the room
+        io.to(updatedMessage.room_id).emit('message_edited', {
+          messageId: messageId,
+          newContent: newContent.trim(),
+          editedAt: updatedMessage.edited_at,
+          roomId: updatedMessage.room_id
+        });
+      } else {
+        socket.emit('error', 'Message not found or you do not have permission to edit it');
+      }
+    } catch (error) {
+      console.error('Error editing message:', error);
+      socket.emit('error', 'Failed to edit message');
+    }
+  });
+
+  // Listen for message deletions
+  socket.on('delete_message', async (data) => {
+    try {
+      const { messageId } = data;
+      const userId = socket.userId;
+
+      if (!userId || !messageId) {
+        socket.emit('error', 'Missing user ID or message ID');
+        return;
+      }
+
+      // Delete message from database (only if user owns the message)
+      const result = await pool.query(
+        'DELETE FROM messages WHERE message_id = $1 AND user_id = $2 RETURNING *',
+        [messageId, userId]
+      );
+
+      if (result.rows.length > 0) {
+        const deletedMessage = result.rows[0];
+
+        // Emit to all users in the room
+        io.to(deletedMessage.room_id).emit('message_deleted', {
+          messageId: messageId,
+          roomId: deletedMessage.room_id
+        });
+      } else {
+        socket.emit('error', 'Message not found or you do not have permission to delete it');
+      }
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      socket.emit('error', 'Failed to delete message');
+    }
   });
 
   // Handle new message
@@ -606,11 +677,11 @@ io.on('connection', (socket) => {
       } else {
         // Use in-memory storage with encryption
         const roomMessages = inMemoryMessages.get(data.room_id) || [];
-        
+
         // Get username from connected users or fallback
         const user = connectedUsers.get(data.sender_id);
         username = user ? user.username : socket.username || `User-${data.sender_id.substring(0, 8)}`;
-        
+
         roomMessages.push({
           message_id: messageId,
           room_id: data.room_id,
@@ -688,10 +759,10 @@ io.on('connection', (socket) => {
         if (currentRoomUsers.has(socket.userId)) {
           currentRoomUsers.delete(socket.userId);
           console.log(`User ${socket.username} removed from room ${socket.currentRoom}, room now has ${currentRoomUsers.size} users`);
-          
+
           // Broadcast updated user list ONLY to users in this specific room
           io.to(socket.currentRoom).emit('users_update', Array.from(currentRoomUsers.values()));
-          
+
           // Clean up empty room
           if (currentRoomUsers.size === 0) {
             roomUsers.delete(socket.currentRoom);
@@ -717,7 +788,7 @@ app.get('/', (req, res) => {
 app.get('/api/health', async (req, res) => {
   let dbStatus = 'disconnected';
   let tableCount = 0;
-  
+
   if (dbAvailable) {
     try {
       const client = await pool.connect();
@@ -734,7 +805,7 @@ app.get('/api/health', async (req, res) => {
       dbStatus = 'error: ' + error.message;
     }
   }
-  
+
   res.json({
     status: 'running',
     database: {
@@ -752,7 +823,7 @@ app.post('/api/admin/cleanup-rooms', async (req, res) => {
   try {
     if (dbAvailable) {
       const client = await pool.connect();
-      
+
       // Find and remove duplicate general rooms, keeping only the first one
       const duplicates = await client.query(`
         WITH duplicates AS (
@@ -762,7 +833,7 @@ app.post('/api/admin/cleanup-rooms', async (req, res) => {
         )
         SELECT room_id, room_name FROM duplicates WHERE rn > 1
       `);
-      
+
       let cleanedCount = 0;
       for (const duplicate of duplicates.rows) {
         // Delete messages first
@@ -774,7 +845,7 @@ app.post('/api/admin/cleanup-rooms', async (req, res) => {
         cleanedCount++;
         console.log(`Cleaned up duplicate room: ${duplicate.room_name} (${duplicate.room_id})`);
       }
-      
+
       client.release();
       res.json({ 
         success: true, 
@@ -786,7 +857,7 @@ app.post('/api/admin/cleanup-rooms', async (req, res) => {
       if (global.inMemoryRooms) {
         const roomNames = new Set();
         const toDelete = [];
-        
+
         for (const [roomId, room] of global.inMemoryRooms.entries()) {
           const lowerName = room.room_name.toLowerCase();
           if (roomNames.has(lowerName)) {
@@ -795,14 +866,14 @@ app.post('/api/admin/cleanup-rooms', async (req, res) => {
             roomNames.add(lowerName);
           }
         }
-        
+
         toDelete.forEach(roomId => {
           global.inMemoryRooms.delete(roomId);
           if (inMemoryMessages.has(roomId)) {
             inMemoryMessages.delete(roomId);
           }
         });
-        
+
         res.json({ 
           success: true, 
           message: `Cleaned up ${toDelete.length} duplicate rooms from memory`,
@@ -824,7 +895,7 @@ app.post('/api/auth/register', async (req, res) => {
   try {
     console.log('Registration attempt:', { body: req.body });
     const { username, email, password } = req.body;
-    
+
     if (!username || !email || !password) {
       console.log('Missing registration fields');
       return res.status(400).json({ error: 'Username, email, and password are required' });
@@ -836,18 +907,18 @@ app.post('/api/auth/register', async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Check if user already exists
         const checkResult = await client.query(
           'SELECT COUNT(*) FROM users WHERE username = $1 OR email = $2',
           [username, email]
         );
-        
+
         if (parseInt(checkResult.rows[0].count) > 0) {
           client.release();
           return res.status(400).json({ error: 'Username or email already exists' });
         }
-        
+
         await client.query(
           'INSERT INTO users (user_id, username, email, password_hash) VALUES ($1, $2, $3, $4)',
           [userId, username, email, hashedPassword]
@@ -859,14 +930,14 @@ app.post('/api/auth/register', async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       const existingUser = Array.from(inMemoryUsers.values()).find(u => u.username === username || u.email === email);
       if (existingUser) {
         return res.status(400).json({ error: 'Username or email already exists' });
       }
-      
+
       inMemoryUsers.set(userId, {
         user_id: userId,
         username,
@@ -895,7 +966,7 @@ app.post('/api/auth/login', async (req, res) => {
   try {
     console.log('Login attempt:', { body: req.body });
     const { username, password } = req.body;
-    
+
     if (!username || !password) {
       console.log('Missing credentials');
       return res.status(400).json({ error: 'Username and password are required' });
@@ -926,7 +997,7 @@ app.post('/api/auth/login', async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       user = Array.from(inMemoryUsers.values()).find(u => u.username === username);
@@ -961,7 +1032,7 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
   try {
     const roomId = req.params.roomId;
-    
+
     // Check if user is member of the room
     if (!await isRoomMember(req.user.user_id, roomId)) {
       return res.status(403).json({ error: 'Access denied: Not a member of this room' });
@@ -983,7 +1054,7 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
         const messages = result.rows.map(row => {
           try {
             let content = '[ENCRYPTED]';
-            
+
             // Decrypt message - all messages should be encrypted
             if (row.encrypted_data && row.iv && row.auth_tag) {
               const encryptedData = {
@@ -993,6 +1064,14 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
               };
               const decryptedData = encryptionManager.decryptForRoom(encryptedData, roomId);
               content = decryptedData.content;
+            } else if (row.encrypted_data) {
+              // Try to handle legacy unencrypted data stored as JSON
+              try {
+                const parsedData = JSON.parse(row.encrypted_data);
+                content = parsedData.content || '[LEGACY_DATA]';
+              } catch (parseError) {
+                content = '[LEGACY_ENCRYPTED]';
+              }
             }
 
             return {
@@ -1012,13 +1091,13 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
               username: row.username
             };
           } catch (decryptError) {
-            console.error('Error decrypting message:', decryptError);
+            console.error('Error decrypting message:', decryptError.message);
             return {
               message_id: row.message_id,
               room_id: row.room_id,
               sender_id: row.user_id,
               user_id: row.user_id,
-              content: '[DECRYPTION_ERROR]',
+              content: '[MESSAGE_CORRUPTED]',
               message_type: row.message_type,
               file_url: row.file_url,
               reply_to: row.reply_to,
@@ -1041,11 +1120,11 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
     } else {
       // Use in-memory storage with decryption
       const roomMessages = inMemoryMessages.get(roomId) || [];
-      
+
       const decryptedMessages = roomMessages.map(msg => {
         try {
           let content = '[ENCRYPTED]';
-          
+
           // Decrypt message - all messages should be encrypted
           if (msg.encrypted_data && msg.iv && msg.auth_tag) {
             const encryptedData = {
@@ -1055,6 +1134,14 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
             };
             const decryptedData = encryptionManager.decryptForRoom(encryptedData, roomId);
             content = decryptedData.content;
+          } else if (msg.encrypted_data) {
+            // Try to handle legacy unencrypted data stored as JSON
+            try {
+              const parsedData = JSON.parse(msg.encrypted_data);
+              content = parsedData.content || '[LEGACY_DATA]';
+            } catch (parseError) {
+              content = '[LEGACY_ENCRYPTED]';
+            }
           }
 
           return {
@@ -1063,15 +1150,15 @@ app.get('/api/rooms/:roomId/messages', authenticateToken, async (req, res) => {
             username: msg.username || `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`
           };
         } catch (decryptError) {
-          console.error('Error decrypting message:', decryptError);
+          console.error('Error decrypting message:', decryptError.message);
           return {
             ...msg,
-            content: '[DECRYPTION_ERROR]',
+            content: '[MESSAGE_CORRUPTED]',
             username: msg.username || `User-${(msg.sender_id || msg.user_id || '').substring(0, 8)}`
           };
         }
       });
-      
+
       res.json(decryptedMessages);
     }
   } catch (error) {
@@ -1089,7 +1176,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
     }
 
     const roomId = req.body.room_id || 'general';
-    
+
     // Check if user is member of the room
     if (!await isRoomMember(req.user.user_id, roomId)) {
       return res.status(403).json({ error: 'Access denied: Not a member of this room' });
@@ -1109,7 +1196,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
       console.error('File encryption failed:', encryptError);
       return res.status(500).json({ error: 'File encryption failed: ' + encryptError.message });
     }
-    
+
     // Combine encrypted data with metadata for storage
     const fileDataForStorage = Buffer.concat([
       encryptedFile.iv,
@@ -1149,7 +1236,7 @@ app.post('/api/upload', authenticateToken, upload.single('file'), async (req, re
 
     // Create internal file URL (will be decrypted on download)
     const fileUrl = `/api/files/${roomId}/${fileName}`;
-    
+
     let username = req.user.username || 'Unknown';
     const timestamp = new Date();
 
@@ -1244,7 +1331,7 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
     let rooms = [];
-    
+
     // Always ensure default rooms exist
     const defaultRooms = [
       {
@@ -1275,7 +1362,7 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
         created_at: new Date('2024-01-01').toISOString()
       }
     ];
-    
+
     if (dbAvailable) {
       try {
         const client = await pool.connect();
@@ -1298,20 +1385,20 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Ensure in-memory rooms exist
       if (!global.inMemoryRooms) {
         global.inMemoryRooms = new Map();
       }
-      
+
       // Add default rooms to memory if they don't exist
       defaultRooms.forEach(room => {
         if (!global.inMemoryRooms.has(room.room_id)) {
           global.inMemoryRooms.set(room.room_id, room);
         }
       });
-      
+
       // Use in-memory storage
       rooms = Array.from(global.inMemoryRooms.values()).map(room => ({
         room_id: room.room_id,
@@ -1322,7 +1409,7 @@ app.get('/api/rooms', authenticateToken, async (req, res) => {
         is_private: room.is_private,
         room_type: room.room_type
       }));
-      
+
       // Sort by created_at DESC
       rooms.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
     }
@@ -1346,14 +1433,14 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
   let connection;
   try {
     const { room_name, description, is_private, room_pin } = req.body;
-    
+
     if (!room_name || room_name.trim() === '') {
       return res.status(400).json({ error: 'Room name is required' });
     }
 
     // Check if room with same name already exists
     let roomExists = false;
-    
+
     if (dbAvailable) {
       try {
         const client = await pool.connect();
@@ -1368,7 +1455,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Check in-memory storage
       if (global.inMemoryRooms) {
@@ -1398,7 +1485,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Insert the room
         await client.query(
           `INSERT INTO chat_rooms (room_id, room_name, description, created_by, is_private, room_type, room_pin) 
@@ -1427,7 +1514,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       const roomData = {
@@ -1440,7 +1527,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
         room_pin: hashedPin,
         created_at: new Date().toISOString()
       };
-      
+
       // Store in a global in-memory rooms map
       if (!global.inMemoryRooms) {
         global.inMemoryRooms = new Map();
@@ -1448,7 +1535,7 @@ app.post('/api/rooms', authenticateToken, async (req, res) => {
       global.inMemoryRooms.set(roomId, roomData);
       console.log('Room created successfully in memory:', roomId);
     }
-    
+
     res.status(201).json({ 
       room_id: roomId, 
       room_name: room_name.trim(), 
@@ -1490,7 +1577,7 @@ app.delete('/api/rooms/:roomId', authenticateToken, async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       if (global.inMemoryRooms && global.inMemoryRooms.has(roomId)) {
@@ -1512,25 +1599,25 @@ app.delete('/api/rooms/:roomId', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Delete messages first (foreign key constraint)
         await client.query(
           'DELETE FROM messages WHERE room_id = $1',
           [roomId]
         );
-        
+
         // Delete room members
         await client.query(
           'DELETE FROM room_members WHERE room_id = $1',
           [roomId]
         );
-        
+
         // Delete the room
         await client.query(
           'DELETE FROM chat_rooms WHERE room_id = $1',
           [roomId]
         );
-        
+
         client.release();
         console.log('Room deleted from database:', roomId);
       } catch (dbError) {
@@ -1599,7 +1686,7 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       if (global.inMemoryRooms && global.inMemoryRooms.has(roomId)) {
@@ -1618,7 +1705,7 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
 
     // Verify PIN using bcrypt
     const pinIsValid = roomData.room_pin && await bcrypt.compare(pin, roomData.room_pin);
-    
+
     if (pinIsValid) {
       // Add user to room members if PIN is correct
       if (dbAvailable) {
@@ -1629,7 +1716,7 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
             'SELECT COUNT(*) FROM room_members WHERE room_id = $1 AND user_id = $2',
             [roomId, req.user.user_id]
           );
-          
+
           if (parseInt(memberCheck.rows[0].count) === 0) {
             await client.query(
               'INSERT INTO room_members (room_id, user_id, role) VALUES ($1, $2, $3)',
@@ -1642,7 +1729,7 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
           console.error('Error adding user to room:', memberError);
         }
       }
-      
+
       return res.json({ success: true, message: 'PIN verified and access granted' });
     } else {
       return res.status(401).json({ error: 'Invalid PIN' });
@@ -1659,7 +1746,7 @@ app.post('/api/rooms/:roomId/verify-pin', authenticateToken, async (req, res) =>
 app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
   try {
     const { roomId, fileName } = req.params;
-    
+
     // Check if user is member of the room
     if (!await isRoomMember(req.user.user_id, roomId)) {
       return res.status(403).json({ error: 'Access denied: Not a member of this room' });
@@ -1676,18 +1763,18 @@ app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
     // Get encrypted file from MinIO
     const fileStream = await minioClient.getObject(bucketName, fileName);
     const chunks = [];
-    
+
     for await (const chunk of fileStream) {
       chunks.push(chunk);
     }
-    
+
     const encryptedFileData = Buffer.concat(chunks);
-    
+
     // Extract IV, auth tag, and encrypted content
     const iv = encryptedFileData.slice(0, 16);
     const authTag = encryptedFileData.slice(16, 32);
     const encrypted = encryptedFileData.slice(32);
-    
+
     // Decrypt file
     const decryptedFile = encryptionManager.decryptFile({
       encrypted: encrypted,
@@ -1698,10 +1785,10 @@ app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
     // Get file metadata
     const objectStat = await minioClient.statObject(bucketName, fileName);
     const metadataHeader = objectStat.metaData['x-file-metadata'];
-    
+
     let originalName = fileName;
     let contentType = 'application/octet-stream';
-    
+
     if (metadataHeader) {
       try {
         const encryptedMetadata = JSON.parse(metadataHeader);
@@ -1717,10 +1804,10 @@ app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
     res.setHeader('Content-Type', contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${originalName}"`);
     res.setHeader('Content-Length', decryptedFile.length);
-    
+
     // Send decrypted file
     res.send(decryptedFile);
-    
+
   } catch (error) {
     console.error('File download error:', error);
     res.status(500).json({ error: 'Failed to download file: ' + error.message });
@@ -1731,10 +1818,10 @@ app.get('/api/files/:roomId/:fileName', authenticateToken, async (req, res) => {
 app.get('/api/files', authenticateToken, async (req, res) => {
   try {
     const allFiles = [];
-    
+
     // Get all rooms the user has access to
     let userRooms = [];
-    
+
     if (dbAvailable) {
       try {
         const client = await pool.connect();
@@ -1749,10 +1836,9 @@ app.get('/api/files', authenticateToken, async (req, res) => {
            WHERE is_private = FALSE`,
           [req.user.user_id]
         );
-        
+
         userRooms = result.rows.map(row => ({
-          room_id: row.room_id,
-          room_name: row.room_name
+          room_id: row.room_id,          room_name: row.room_name
         }));
         client.release();
       } catch (dbError) {
@@ -1771,7 +1857,7 @@ app.get('/api/files', authenticateToken, async (req, res) => {
     // Get files from each accessible room
     for (const room of userRooms) {
       const bucketName = `chat-files-${room.room_id}`;
-      
+
       try {
         const bucketExists = await minioClient.bucketExists(bucketName);
         if (!bucketExists) continue;
@@ -1781,12 +1867,12 @@ app.get('/api/files', authenticateToken, async (req, res) => {
         for await (const obj of objectsStream) {
           try {
             const stats = await minioClient.statObject(bucketName, obj.name);
-            
+
             // Try to decrypt metadata
             let originalFilename = obj.name;
             let uploadedBy = 'Unknown';
             let fileSize = stats.size;
-            
+
             const metadataHeader = stats.metaData['x-file-metadata'];
             if (metadataHeader) {
               try {
@@ -1839,7 +1925,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
       try {
         const client = await pool.connect();
         const result = await client.query(
-          'SELECT user_id, username, email, avatar_url, created_at FROM users WHERE user_id = $1',
+          'SELECT user_id, username, email, avatar_url, created_at, last_seen, is_online, status FROM users WHERE user_id = $1',
           [req.user.user_id]
         );
 
@@ -1852,7 +1938,7 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
         dbAvailable = false;
       }
     }
-    
+
     if (!dbAvailable) {
       // Use in-memory storage
       user = inMemoryUsers.get(req.user.user_id);
@@ -1862,7 +1948,10 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
           username: user.username,
           email: user.email,
           avatar_url: user.avatar_url || null,
-          created_at: user.created_at
+          created_at: user.created_at,
+          last_seen: user.last_seen || new Date().toISOString(),
+          is_online: user.is_online || false,
+          status: user.status || 'online'
         };
       }
     }
@@ -1878,11 +1967,62 @@ app.get('/api/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// Get public user profile (for friends)
+app.get('/api/users/:userId/profile', authenticateToken, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    let user = null;
+
+    if (dbAvailable) {
+      try {
+        const client = await pool.connect();
+        const result = await client.query(
+          'SELECT user_id, username, avatar_url, created_at, last_seen, is_online, status FROM users WHERE user_id = $1',
+          [userId]
+        );
+
+        if (result.rows.length > 0) {
+          user = result.rows[0];
+        }
+        client.release();
+      } catch (dbError) {
+        console.error('Database profile fetch failed:', dbError);
+        dbAvailable = false;
+      }
+    }
+
+    if (!dbAvailable) {
+      // Use in-memory storage
+      const userData = inMemoryUsers.get(userId);
+      if (userData) {
+        user = {
+          user_id: userData.user_id,
+          username: userData.username,
+          avatar_url: userData.avatar_url || null,
+          created_at: userData.created_at,
+          last_seen: userData.last_seen || new Date().toISOString(),
+          is_online: userData.is_online || false,
+          status: userData.status || 'online'
+        };
+      }
+    }
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    res.status(500).json({ error: 'Failed to fetch user profile: ' + error.message });
+  }
+});
+
 // Update user profile
 app.put('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { username, email } = req.body;
-    
+
     if (!username || !email) {
       return res.status(400).json({ error: 'Username and email are required' });
     }
@@ -1890,25 +2030,25 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Check if username/email is taken by another user
         const checkResult = await client.query(
           'SELECT COUNT(*) FROM users WHERE (username = $1 OR email = $2) AND user_id != $3',
           [username, email, req.user.user_id]
         );
-        
+
         if (parseInt(checkResult.rows[0].count) > 0) {
           client.release();
           return res.status(400).json({ error: 'Username or email already taken' });
         }
-        
+
         const result = await client.query(
           'UPDATE users SET username = $1, email = $2 WHERE user_id = $3 RETURNING user_id, username, email, avatar_url, created_at',
           [username, email, req.user.user_id]
         );
 
         client.release();
-        
+
         if (result.rows.length > 0) {
           res.json(result.rows[0]);
         } else {
@@ -1924,20 +2064,20 @@ app.put('/api/profile', authenticateToken, async (req, res) => {
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
+
       // Check if username/email is taken
       const conflict = Array.from(inMemoryUsers.values()).find(u => 
         u.user_id !== req.user.user_id && (u.username === username || u.email === email)
       );
-      
+
       if (conflict) {
         return res.status(400).json({ error: 'Username or email already taken' });
       }
-      
+
       user.username = username;
       user.email = email;
       inMemoryUsers.set(req.user.user_id, user);
-      
+
       res.json({
         user_id: user.user_id,
         username: user.username,
@@ -1980,7 +2120,7 @@ app.post('/api/profile/avatar', authenticateToken, upload.single('avatar'), asyn
     const bucketExists = await minioClient.bucketExists(bucketName);
     if (!bucketExists) {
       await minioClient.makeBucket(bucketName, 'us-east-1');
-      
+
       // Set public read policy for avatars
       const policy = {
         Version: '2012-10-17',
@@ -2013,7 +2153,7 @@ app.post('/api/profile/avatar', authenticateToken, upload.single('avatar'), asyn
 
     // Create avatar URL
     const avatarUrl = `/api/avatars/${fileName}`;
-    
+
     // Update user's avatar URL in database or memory
     if (dbAvailable) {
       try {
@@ -2023,7 +2163,7 @@ app.post('/api/profile/avatar', authenticateToken, upload.single('avatar'), asyn
           [avatarUrl, req.user.user_id]
         );
         client.release();
-        
+
         if (result.rows.length > 0) {
           res.json({ 
             message: 'Avatar uploaded successfully', 
@@ -2043,10 +2183,10 @@ app.post('/api/profile/avatar', authenticateToken, upload.single('avatar'), asyn
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
+
       user.avatar_url = avatarUrl;
       inMemoryUsers.set(req.user.user_id, user);
-      
+
       res.json({ 
         message: 'Avatar uploaded successfully', 
         avatar_url: avatarUrl,
@@ -2080,11 +2220,11 @@ app.get('/api/avatars/:fileName', async (req, res) => {
     // Get avatar from MinIO
     const fileStream = await minioClient.getObject(bucketName, fileName);
     const chunks = [];
-    
+
     for await (const chunk of fileStream) {
       chunks.push(chunk);
     }
-    
+
     const fileData = Buffer.concat(chunks);
 
     // Get file metadata for content type
@@ -2095,10 +2235,10 @@ app.get('/api/avatars/:fileName', async (req, res) => {
     res.setHeader('Content-Type', contentType);
     res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
     res.setHeader('Content-Length', fileData.length);
-    
+
     // Send avatar
     res.send(fileData);
-    
+
   } catch (error) {
     console.error('Avatar download error:', error);
     res.status(404).json({ error: 'Avatar not found' });
@@ -2109,7 +2249,7 @@ app.get('/api/avatars/:fileName', async (req, res) => {
 app.put('/api/profile/password', authenticateToken, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    
+
     if (!currentPassword || !newPassword) {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
@@ -2119,7 +2259,7 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
     }
 
     let user = null;
-    
+
     if (dbAvailable) {
       try {
         const client = await pool.connect();
@@ -2134,7 +2274,7 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
         }
 
         user = result.rows[0];
-        
+
         // Verify current password
         const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
         if (!validPassword) {
@@ -2161,7 +2301,7 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
+
       // Verify current password
       const validPassword = await bcrypt.compare(currentPassword, user.password_hash);
       if (!validPassword) {
@@ -2172,7 +2312,7 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
       const hashedNewPassword = await bcrypt.hash(newPassword, 10);
       user.password_hash = hashedNewPassword;
       inMemoryUsers.set(req.user.user_id, user);
-      
+
       res.json({ message: 'Password updated successfully' });
     }
   } catch (error) {
@@ -2185,7 +2325,7 @@ app.put('/api/profile/password', authenticateToken, async (req, res) => {
 app.post('/api/friends/request', authenticateToken, async (req, res) => {
   try {
     const { username } = req.body;
-    
+
     if (!username) {
       return res.status(400).json({ error: 'Username is required' });
     }
@@ -2200,7 +2340,7 @@ app.post('/api/friends/request', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Find target user
         const userResult = await client.query(
           'SELECT user_id, username FROM users WHERE username = $1',
@@ -2264,7 +2404,7 @@ app.post('/api/friends/request', authenticateToken, async (req, res) => {
 
       const existingKey = `${req.user.user_id}-${targetUser.user_id}`;
       const reverseKey = `${targetUser.user_id}-${req.user.user_id}`;
-      
+
       if (global.inMemoryFriendships.has(existingKey) || global.inMemoryFriendships.has(reverseKey)) {
         return res.status(400).json({ error: 'Friend request already exists' });
       }
@@ -2308,7 +2448,7 @@ app.get('/api/friends', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Get accepted friendships
         const friendsResult = await client.query(
           `SELECT f.friendship_id, f.requester_id, f.addressee_id, f.created_at,
@@ -2389,7 +2529,7 @@ app.get('/api/friends', authenticateToken, async (req, res) => {
           if (friendship.requester_id === req.user.user_id || friendship.addressee_id === req.user.user_id) {
             const friendId = friendship.requester_id === req.user.user_id ? friendship.addressee_id : friendship.requester_id;
             const friendUser = inMemoryUsers.get(friendId);
-            
+
             if (friendship.status === 'accepted') {
               friends.push({
                 friendship_id: friendship.friendship_id,
@@ -2439,7 +2579,7 @@ app.put('/api/friends/:friendshipId', authenticateToken, async (req, res) => {
   try {
     const { friendshipId } = req.params;
     const { action } = req.body; // 'accept' or 'reject'
-    
+
     if (!['accept', 'reject'].includes(action)) {
       return res.status(400).json({ error: 'Invalid action. Use "accept" or "reject"' });
     }
@@ -2450,7 +2590,7 @@ app.put('/api/friends/:friendshipId', authenticateToken, async (req, res) => {
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Get friendship details
         const friendshipResult = await client.query(
           `SELECT f.*, u.username as requester_username 
@@ -2548,7 +2688,7 @@ app.delete('/api/friends/:friendshipId', authenticateToken, async (req, res) => 
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         const result = await client.query(
           `DELETE FROM friendships 
            WHERE friendship_id = $1 
@@ -2565,8 +2705,7 @@ app.delete('/api/friends/:friendshipId', authenticateToken, async (req, res) => 
         client.release();
       } catch (dbError) {
         console.error('Database friendship removal failed:', dbError);
-        return res.status(500).json({ error: 'Database error' });
-      }
+        return res.status(500).json({ error: 'Database error' });      }
     } else {
       // Use in-memory storage
       let found = false;
@@ -2598,17 +2737,17 @@ app.delete('/api/friends/:friendshipId', authenticateToken, async (req, res) => 
 app.delete('/api/profile', authenticateToken, async (req, res) => {
   try {
     const { password } = req.body;
-    
+
     if (!password) {
       return res.status(400).json({ error: 'Password is required to delete account' });
     }
 
     let user = null;
-    
+
     if (dbAvailable) {
       try {
         const client = await pool.connect();
-        
+
         // Get user and verify password
         const userResult = await client.query(
           'SELECT password_hash FROM users WHERE user_id = $1',
@@ -2621,7 +2760,7 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
         }
 
         user = userResult.rows[0];
-        
+
         // Verify password
         const validPassword = await bcrypt.compare(password, user.password_hash);
         if (!validPassword) {
@@ -2634,19 +2773,19 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
           'DELETE FROM messages WHERE user_id = $1',
           [req.user.user_id]
         );
-        
+
         // Delete user's room memberships
         await client.query(
           'DELETE FROM room_members WHERE user_id = $1',
           [req.user.user_id]
         );
-        
+
         // Delete rooms created by user (cascade will handle messages and memberships)
         await client.query(
           'DELETE FROM chat_rooms WHERE created_by = $1',
           [req.user.user_id]
         );
-        
+
         // Finally delete the user
         await client.query(
           'DELETE FROM users WHERE user_id = $1',
@@ -2665,7 +2804,7 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
-      
+
       // Verify password
       const validPassword = await bcrypt.compare(password, user.password_hash);
       if (!validPassword) {
@@ -2674,13 +2813,13 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
 
       // Delete from in-memory storage
       inMemoryUsers.delete(req.user.user_id);
-      
+
       // Delete user's messages
       for (const [roomId, messages] of inMemoryMessages.entries()) {
         const filteredMessages = messages.filter(msg => msg.user_id !== req.user.user_id);
         inMemoryMessages.set(roomId, filteredMessages);
       }
-      
+
       // Delete rooms created by user
       if (global.inMemoryRooms) {
         for (const [roomId, room] of global.inMemoryRooms.entries()) {
@@ -2690,7 +2829,7 @@ app.delete('/api/profile', authenticateToken, async (req, res) => {
           }
         }
       }
-      
+
       console.log('User account deleted from memory:', req.user.user_id);
     }
 
