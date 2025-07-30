@@ -8,11 +8,8 @@ class EncryptionManager {
     this.ivLength = 16;  // 128 bits
     this.tagLength = 16; // 128 bits
     
-    // Use a fixed master key for development, or load from environment
-    this.masterKey = process.env.MASTER_KEY ? 
-      Buffer.from(process.env.MASTER_KEY, 'hex') : 
-      Buffer.from('a'.repeat(64), 'hex'); // Fixed 32-byte key for development
-    
+    // In production, these should be loaded from secure environment variables
+    this.masterKey = process.env.MASTER_KEY || crypto.randomBytes(this.keyLength);
     this.roomKeys = new Map(); // Cache for room-specific keys
   }
 
@@ -31,8 +28,9 @@ class EncryptionManager {
     try {
       const key = this.getRoomKey(roomId);
       const iv = crypto.randomBytes(this.ivLength);
-      const cipher = crypto.createCipherGCM(this.algorithm, key, iv);
-      
+      const cipher = crypto.createCipher(this.algorithm, key);
+      cipher.setAAD(Buffer.from(roomId, 'utf8'));
+
       const dataString = typeof data === 'string' ? data : JSON.stringify(data);
       let encrypted = cipher.update(dataString, 'utf8', 'hex');
       encrypted += cipher.final('hex');
@@ -54,11 +52,9 @@ class EncryptionManager {
   decryptForRoom(encryptedData, roomId) {
     try {
       const key = this.getRoomKey(roomId);
-      const iv = Buffer.from(encryptedData.iv, 'hex');
-      const authTag = Buffer.from(encryptedData.authTag, 'hex');
-      
-      const decipher = crypto.createDecipherGCM(this.algorithm, key, iv);
-      decipher.setAuthTag(authTag);
+      const decipher = crypto.createDecipher(this.algorithm, key);
+      decipher.setAAD(Buffer.from(roomId, 'utf8'));
+      decipher.setAuthTag(Buffer.from(encryptedData.authTag, 'hex'));
 
       let decrypted = decipher.update(encryptedData.encrypted, 'hex', 'utf8');
       decrypted += decipher.final('utf8');
@@ -80,7 +76,8 @@ class EncryptionManager {
     try {
       const key = this.getRoomKey(roomId);
       const iv = crypto.randomBytes(this.ivLength);
-      const cipher = crypto.createCipherGCM(this.algorithm, key, iv);
+      const cipher = crypto.createCipher(this.algorithm, key);
+      cipher.setAAD(Buffer.from(roomId, 'utf8'));
 
       const encrypted = Buffer.concat([cipher.update(fileBuffer), cipher.final()]);
       const authTag = cipher.getAuthTag();
@@ -100,7 +97,8 @@ class EncryptionManager {
   decryptFile(encryptedFileData, roomId) {
     try {
       const key = this.getRoomKey(roomId);
-      const decipher = crypto.createDecipherGCM(this.algorithm, key, encryptedFileData.iv);
+      const decipher = crypto.createDecipher(this.algorithm, key);
+      decipher.setAAD(Buffer.from(roomId, 'utf8'));
       decipher.setAuthTag(encryptedFileData.authTag);
 
       const decrypted = Buffer.concat([

@@ -540,24 +540,123 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Update message in database (only if user owns the message)
-      const result = await pool.query(
-        'UPDATE messages SET content = $1, is_edited = true, edited_at = NOW() WHERE message_id = $2 AND user_id = $3 RETURNING *',
-        [newContent.trim(), messageId, userId]
-      );
+      if (dbAvailable) {
+        try {
+          const client = await pool.connect();
+          
+          // First, get the original message to check ownership and get room_id
+          const originalMessage = await client.query(
+            'SELECT room_id, user_id FROM messages WHERE message_id = $1',
+            [messageId]
+          );
 
-      if (result.rows.length > 0) {
-        const updatedMessage = result.rows[0];
+          if (originalMessage.rows.length === 0) {
+            client.release();
+            socket.emit('error', 'Message not found');
+            return;
+          }
 
-        // Emit to all users in the room
-        io.to(updatedMessage.room_id).emit('message_edited', {
+          const message = originalMessage.rows[0];
+          
+          // Check if user owns the message
+          if (message.user_id !== userId) {
+            client.release();
+            socket.emit('error', 'You do not have permission to edit this message');
+            return;
+          }
+
+          // Prepare updated message data for encryption (just the content, not metadata)
+          const messageData = {
+            content: newContent.trim(),
+            message_type: 'text',
+            sender_id: userId,
+            created_at: new Date(),
+            edited: true
+          };
+
+          // Encrypt the updated content
+          let encryptedContent;
+          try {
+            encryptedContent = encryptionManager.encryptForRoom(messageData, message.room_id);
+            console.log('Message encrypted successfully for edit');
+          } catch (encryptError) {
+            console.error('Encryption failed during edit:', encryptError);
+            client.release();
+            socket.emit('error', 'Failed to encrypt message');
+            return;
+          }
+
+          // Update message in database with encrypted content
+          const result = await client.query(
+            'UPDATE messages SET encrypted_data = $1, iv = $2, auth_tag = $3, is_edited = true, edited_at = NOW() WHERE message_id = $4 RETURNING *',
+            [encryptedContent.encrypted, encryptedContent.iv, encryptedContent.authTag, messageId]
+          );
+
+          client.release();
+
+          if (result.rows.length > 0) {
+            const updatedMessage = result.rows[0];
+
+            // Emit to all users in the room with decrypted content
+            io.to(updatedMessage.room_id).emit('message_edited', {
+              messageId: messageId,
+              newContent: newContent.trim(),
+              editedAt: updatedMessage.edited_at,
+              roomId: updatedMessage.room_id
+            });
+          }
+        } catch (dbError) {
+          console.error('Database edit failed:', dbError);
+          socket.emit('error', 'Failed to edit message');
+        }
+      } else {
+        // Handle in-memory storage
+        const roomMessages = inMemoryMessages.get(socket.currentRoom) || [];
+        const messageIndex = roomMessages.findIndex(msg => 
+          msg.message_id === messageId && msg.user_id === userId
+        );
+
+        if (messageIndex === -1) {
+          socket.emit('error', 'Message not found or you do not have permission to edit it');
+          return;
+        }
+
+        // Prepare updated message data for encryption
+        const messageData = {
+          content: newContent.trim(),
+          message_type: 'text',
+          sender_id: userId,
+          created_at: new Date(),
+          edited: true
+        };
+
+        // Encrypt the updated content
+        let encryptedContent;
+        try {
+          encryptedContent = encryptionManager.encryptForRoom(messageData, socket.currentRoom);
+          console.log('Message encrypted successfully for edit in memory');
+        } catch (encryptError) {
+          console.error('Encryption failed during edit:', encryptError);
+          socket.emit('error', 'Failed to encrypt message');
+          return;
+        }
+
+        // Update the message in memory
+        roomMessages[messageIndex].encrypted_data = encryptedContent.encrypted;
+        roomMessages[messageIndex].iv = encryptedContent.iv;
+        roomMessages[messageIndex].auth_tag = encryptedContent.authTag;
+        roomMessages[messageIndex].is_edited = true;
+        roomMessages[messageIndex].edited_at = new Date().toISOString();
+
+        inMemoryMessages.set(socket.currentRoom, roomMessages);
+
+        // Emit to all users in the room with decrypted content
+        io.to(socket.currentRoom).emit('message_edited', {
           messageId: messageId,
           newContent: newContent.trim(),
-          editedAt: updatedMessage.edited_at,
-          roomId: updatedMessage.room_id
+          editedAt: roomMessages[messageIndex].edited_at,
+          roomId: socket.currentRoom
         });
-      } else {
-        socket.emit('error', 'Message not found or you do not have permission to edit it');
       }
     } catch (error) {
       console.error('Error editing message:', error);
@@ -576,22 +675,54 @@ io.on('connection', (socket) => {
         return;
       }
 
-      // Delete message from database (only if user owns the message)
-      const result = await pool.query(
-        'DELETE FROM messages WHERE message_id = $1 AND user_id = $2 RETURNING *',
-        [messageId, userId]
-      );
+      if (dbAvailable) {
+        try {
+          const client = await pool.connect();
+          
+          // Delete message from database (only if user owns the message)
+          const result = await client.query(
+            'DELETE FROM messages WHERE message_id = $1 AND user_id = $2 RETURNING *',
+            [messageId, userId]
+          );
 
-      if (result.rows.length > 0) {
-        const deletedMessage = result.rows[0];
+          client.release();
+
+          if (result.rows.length > 0) {
+            const deletedMessage = result.rows[0];
+
+            // Emit to all users in the room
+            io.to(deletedMessage.room_id).emit('message_deleted', {
+              messageId: messageId,
+              roomId: deletedMessage.room_id
+            });
+          } else {
+            socket.emit('error', 'Message not found or you do not have permission to delete it');
+          }
+        } catch (dbError) {
+          console.error('Database delete failed:', dbError);
+          socket.emit('error', 'Failed to delete message');
+        }
+      } else {
+        // Handle in-memory storage
+        const roomMessages = inMemoryMessages.get(socket.currentRoom) || [];
+        const messageIndex = roomMessages.findIndex(msg => 
+          msg.message_id === messageId && msg.user_id === userId
+        );
+
+        if (messageIndex === -1) {
+          socket.emit('error', 'Message not found or you do not have permission to delete it');
+          return;
+        }
+
+        // Remove the message from memory
+        roomMessages.splice(messageIndex, 1);
+        inMemoryMessages.set(socket.currentRoom, roomMessages);
 
         // Emit to all users in the room
-        io.to(deletedMessage.room_id).emit('message_deleted', {
+        io.to(socket.currentRoom).emit('message_deleted', {
           messageId: messageId,
-          roomId: deletedMessage.room_id
+          roomId: socket.currentRoom
         });
-      } else {
-        socket.emit('error', 'Message not found or you do not have permission to delete it');
       }
     } catch (error) {
       console.error('Error deleting message:', error);
